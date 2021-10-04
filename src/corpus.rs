@@ -36,10 +36,7 @@ pub async fn gen_corpus_data(secret: &str, fname: &str, uname: &str, size: usize
           if i == x {
               corpus.push_str(&line);
               take = iter.next();
-              if take.is_some() {
-                  // add a trailing next line iff has next
-                  corpus.push('\n');
-              }
+              corpus.push('\n');
           }
       } else {
           break;
