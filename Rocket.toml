@@ -1,0 +1,11 @@
+[global.tls]
+certs = "/Users/user/Documents/REPO/corpus_generator/private/linfo2263.pem"
+key   = "/Users/user/Documents/REPO/corpus_generator/private/linfo2263.key"
+
+[release]
+address = "::"   # use "0.0.0.0" if you are on an ipv4 server
+port    = 443    # use 80 if you dont want https
+
+[debug]
+address = "127.0.0.1"
+port    = 8000

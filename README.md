@@ -104,27 +104,25 @@ cargo vendor
 # ingi-cloud VM.
 ```
 
-## IP6TABLES
-Another common pitfall of deploying something onto the ingi cloud, is to 
-configure the firewall. To that end, one instictively thinks of `iptables`
-however, when the machine is an ipv6 machine; the firewall is configured 
-through `ip6tables` instead.
+## Opening the Service to the world
+No need to fiddle with ip6tables: that won't work. Our beloved sysadmins are
+the ones holding the leads to open ports on your machine and make it globally
+routable. All you need to do is to create a ticket and ask them to provide your
+machine with: 
+  - a dns name
+  - open ports 80 (http) and/or 443 (https)
 
+## Offering the service through a secure connection
+It is likely that student browsers will complain about the fact that your 
+service is not available via a secure connection (and might refuse to download
+the generated content). So the next thing you'll want to do is to configure
+the web service to run over https. 
+
+This is extremely simple: all you need to do is to: 
+1. Generate a key and Certificate request 
 ```
-# Drop everything 
-ip6tables -P FORWARD DROP
-ip6tables -P INPUT DROP
-ip6tables -P OUTPUT DROP
-
-# Allow session state tracking
-ip6tables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
-ip6tables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
-ip6tables -A OUTPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-# Open HTTP from everywhere
-ip6tables -A FORWARD -m state --state NEW -p tcp --dport ssh -j ACCEPT
-ip6tables -A FORWARD -m state --state NEW -p tcp --dport http -j ACCEPT
-
-# Save
-ip6tables-save -c
+openssl req -new -newkey rsa:2048 -nodes -keyout linfo2263.key -out linfo2263.csr
 ```
+2. Have your certificate request (csr) signed by the admins
+3. Update the file `Rocket.toml` make sure the tls configurations points towards
+   your signed certificate.
