@@ -6,6 +6,8 @@
 
 use std::path::Path;
 
+use rand::Rng;
+use rustc_hash::FxHashSet;
 use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
 use sha2::{Digest, Sha256};
@@ -13,7 +15,7 @@ use tokio::{fs::File, io::{AsyncBufReadExt, BufReader}};
 use crate::error::Result;
 
 /// A strong and fast seedable rng
-type Rng = Xoshiro256Plus;
+type PRng = Xoshiro256Plus;
 type Seed = [u8; 32];
 
 /// Actually generates the corpus data (this is where the most important bits 
@@ -47,6 +49,33 @@ pub async fn gen_corpus_data(secret: &str, fname: &str, uname: &str, size: usize
   Ok(corpus)
 }
 
+pub async fn pick_random_word(secret: &str, fname: &str, uname: &str, nth_random_word: usize) -> Result<String> {
+    let mut rng   = PRng::from_seed(seed(uname, secret));
+    
+    // Open the targetted corpus
+    let file = File::open(fname);
+    let read = BufReader::new(file.await?);
+    let mut lines = read.lines();
+    
+    // collect all words in a hash set
+    let mut words = FxHashSet::default();
+    while let Some(line) = lines.next_line().await? {
+        for word in line.split_whitespace() {
+           if is_alphabetic(word) {
+                words.insert(word.to_lowercase()); 
+           }
+        }
+    }
+
+    // pick some random word in the set
+    let mut target = rng.gen_range(0..words.len());
+    for _ in 0..nth_random_word {
+        target = rng.gen_range(0..words.len());
+    }
+
+    Ok(words.into_iter().nth(target).unwrap())
+}
+
 /// Creates an unique seed from a given key and user name
 /// The returned seed is an array of 32 bytes
 fn seed(uname: &str, key: &str) -> Seed {
@@ -75,8 +104,13 @@ async fn nb_lines<P: AsRef<Path>>(fname: P) -> Result<usize> {
 /// corpus
 async fn sample(secret: &str, fname: &str, uname: &str, size: usize) -> Result<Vec<usize>> {
   let lines = nb_lines(fname);
-  let mut rng = Rng::from_seed(seed(uname, secret));
+  let mut rng = PRng::from_seed(seed(uname, secret));
   let mut sample = rand::seq::index::sample(&mut rng, lines.await?, size).into_vec();
   sample.sort_unstable();
   Ok(sample)
+}
+
+/// Returns true iff the given word is a text word (every character is alphabetic)
+fn is_alphabetic(word: &str) -> bool {
+    word.chars().all(char::is_alphabetic)
 }

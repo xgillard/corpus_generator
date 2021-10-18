@@ -195,6 +195,7 @@ dependencies = [
  "rand",
  "rand_xoshiro",
  "rocket",
+ "rustc-hash",
  "sha2",
  "structopt",
  "thiserror",
@@ -988,7 +989,7 @@ dependencies = [
 [[package]]
 name = "rocket"
 version = "0.5.0-rc.1"
-source = "git+https://github.com/SergioBenitez/Rocket#8cae077b#8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
+source = "git+https://github.com/SergioBenitez/Rocket?rev=8cae077ba1d54b92cdef3e171a730b819d5eeb8e#8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1025,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "rocket_codegen"
 version = "0.5.0-rc.1"
-source = "git+https://github.com/SergioBenitez/Rocket#8cae077b#8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
+source = "git+https://github.com/SergioBenitez/Rocket?rev=8cae077ba1d54b92cdef3e171a730b819d5eeb8e#8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
 dependencies = [
  "devise",
  "glob",
@@ -1040,7 +1041,7 @@ dependencies = [
 [[package]]
 name = "rocket_http"
 version = "0.5.0-rc.1"
-source = "git+https://github.com/SergioBenitez/Rocket#8cae077b#8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
+source = "git+https://github.com/SergioBenitez/Rocket?rev=8cae077ba1d54b92cdef3e171a730b819d5eeb8e#8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
 dependencies = [
  "cookie",
  "either",
@@ -1063,6 +1064,12 @@ dependencies = [
  "tokio-rustls",
  "uncased",
 ]
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustls"

@@ -3,6 +3,7 @@ replace-with = "vendored-sources"
 
 [source."https://github.com/SergioBenitez/Rocket"]
 git = "https://github.com/SergioBenitez/Rocket"
+rev = "8cae077ba1d54b92cdef3e171a730b819d5eeb8e"
 replace-with = "vendored-sources"
 
 [source.vendored-sources]
