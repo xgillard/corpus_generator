@@ -1,5 +1,5 @@
-//! This module defines a convenient `NamedBinary` struct which acts as an 
-//! http responder capable of returning a dynamically generated binary file 
+//! This module defines a convenient `NamedBinary` struct which acts as an
+//! http responder capable of returning a dynamically generated binary file
 //! which is to be downloaded
 //!
 //! Author: X. Gillard
@@ -7,7 +7,7 @@
 
 use std::io::Cursor;
 
-use rocket::{Request, Response, http::Status, response::Responder};
+use rocket::{http::Status, response::Responder, Request, Response};
 
 /// A responder that lets the browser download a dynamically generated file
 /// and give it a pre-defined name
@@ -25,10 +25,7 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for NamedBinary {
     fn respond_to(self, _req: &'r Request<'_>) -> rocket::response::Result<'o> {
         Response::build()
             .streamed_body(Cursor::new(self.payload))
-            .raw_header(
-                "Content-Type", 
-                self.content_type
-            )
+            .raw_header("Content-Type", self.content_type)
             .raw_header(
                 "Content-Disposition",
                 format!("attachment; filename=\"{}\"", self.download_name),
