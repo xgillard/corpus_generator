@@ -49,6 +49,8 @@ pub async fn gen_corpus_data(secret: &str, fname: &str, uname: &str, size: usize
   Ok(corpus)
 }
 
+
+
 pub async fn pick_random_word(secret: &str, fname: &str, uname: &str, nth_random_word: usize) -> Result<String> {
     let mut rng   = PRng::from_seed(seed(uname, secret));
     
@@ -60,8 +62,11 @@ pub async fn pick_random_word(secret: &str, fname: &str, uname: &str, nth_random
     // collect all words in a hash set
     let mut words = FxHashSet::default();
     while let Some(line) = lines.next_line().await? {
-        for word in line.split_whitespace() {
-           if is_alphabetic(word) {
+        // When picking up random words, from a corpus, I want to make sure 
+        // to isolate only alphabetic words. This excludes named entities 
+        // such as X15, but I think it is a fair move to do.        
+        for word in line.split(|c: char| !c.is_alphabetic()) {
+           if word.len() >= 4 {
                 words.insert(word.to_lowercase()); 
            }
         }
@@ -108,9 +113,4 @@ async fn sample(secret: &str, fname: &str, uname: &str, size: usize) -> Result<V
   let mut sample = rand::seq::index::sample(&mut rng, lines.await?, size).into_vec();
   sample.sort_unstable();
   Ok(sample)
-}
-
-/// Returns true iff the given word is a text word (every character is alphabetic)
-fn is_alphabetic(word: &str) -> bool {
-    word.chars().all(char::is_alphabetic)
 }
