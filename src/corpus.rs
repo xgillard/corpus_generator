@@ -97,7 +97,7 @@ async fn build_blacklist(blacklist: &str) -> Result<FxHashSet<String>> {
     let mut lines = read.lines();
     let mut forbidden = FxHashSet::default();
     while let Some(line) = lines.next_line().await? {
-        forbidden.insert(line);
+        forbidden.insert(line.to_lowercase());
     }
     Ok(forbidden)
 }
