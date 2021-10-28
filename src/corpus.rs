@@ -10,7 +10,7 @@ use crate::error::Result;
 use rand::Rng;
 use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use sha2::{Digest, Sha256};
 use tokio::{
     fs::File,
@@ -60,6 +60,7 @@ pub async fn gen_corpus_data(
 pub async fn pick_random_word(
     secret: &str,
     fname: &str,
+    blist: &str,
     uname: &str,
     min_occurs: usize,
     min_length: usize,
@@ -67,25 +68,10 @@ pub async fn pick_random_word(
 ) -> Result<String> {
     let mut rng = PRng::from_seed(seed(uname, secret));
 
-    // Open the targetted corpus
-    let file = File::open(fname);
-    let read = BufReader::new(file.await?);
-    let mut lines = read.lines();
-
-    // collect all words in a hash set
-    let mut words = FxHashMap::default();
-    while let Some(line) = lines.next_line().await? {
-        // When picking up random words, from a corpus, I want to make sure
-        // to isolate only alphabetic words. This excludes named entities
-        // such as X15, but I think it is a fair move to do.
-        for word in line.split(|c: char| !c.is_alphabetic()) {
-            if word.len() >= min_length {
-                words.entry(word.to_lowercase())
-                    .and_modify(|e| *e+=1)
-                    .or_insert(1);
-            }
-        }
-    }
+    let blacklist = build_blacklist(blist).await?;
+    let mut words = build_word_counts(fname, |w| 
+        w.len() >= min_length && !blacklist.contains(w)
+    ).await?;
 
     // keep only those words occuring more than the required threshold
     words.retain(|_k, v| *v >= min_occurs);
@@ -102,6 +88,42 @@ pub async fn pick_random_word(
         .unwrap();
     
     Ok(chosen)
+}
+
+async fn build_blacklist(blacklist: &str) -> Result<FxHashSet<String>> {
+    // Build the black list
+    let file = File::open(blacklist);
+    let read = BufReader::new(file.await?);
+    let mut lines = read.lines();
+    let mut forbidden = FxHashSet::default();
+    while let Some(line) = lines.next_line().await? {
+        forbidden.insert(line);
+    }
+    Ok(forbidden)
+}
+
+async fn build_word_counts<F>(corpus: &str, can_keep: F) -> Result<FxHashMap<String, usize>> 
+    where F: Fn(&str) -> bool {
+    // Open the targetted corpus
+    let file = File::open(corpus);
+    let read = BufReader::new(file.await?);
+    let mut lines = read.lines();
+
+    // collect all words in a hash set
+    let mut words = FxHashMap::default();
+    while let Some(line) = lines.next_line().await? {
+        // When picking up random words, from a corpus, I want to make sure
+        // to isolate only alphabetic words. This excludes named entities
+        // such as X15, but I think it is a fair move to do.
+        for word in line.split(|c: char| !c.is_alphabetic()) {
+            if can_keep(word) {
+                words.entry(word.to_lowercase())
+                    .and_modify(|e| *e+=1)
+                    .or_insert(1);
+            }
+        }
+    }
+    Ok(words)
 }
 
 /// Creates an unique seed from a given key and user name

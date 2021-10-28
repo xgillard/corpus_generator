@@ -80,8 +80,8 @@ struct Args {
 /// fine in this case).
 static mut CORPUS_DIR: &str = "public/corpus";
 
-/// Returns the filename corresponding to a given corpus id
-fn fname_from_corpus_id(corpus_id: &str) -> String {
+/// Returns the filename corresponding to a given (corpus) id
+fn fname_from_id(corpus_id: &str) -> String {
     // This block is marked
     unsafe { format!("{}/{}.txt", CORPUS_DIR, corpus_id) }
 }
@@ -114,7 +114,7 @@ async fn gen_corpus_bz2(
     size: usize,
     whatever_filename: &str,
 ) -> Result<NamedBinary> {
-    let fname = fname_from_corpus_id(corpus_id);
+    let fname = fname_from_id(corpus_id);
     let mut buffer = vec![];
     let data = gen_corpus_data(secret, &fname, uname, size).await?;
     let mut encoder = BzEncoder::new(&mut buffer, Compression::best());
@@ -156,7 +156,7 @@ async fn gen_corpus_txt(
     size: usize,
     _whatever_filename: &str,
 ) -> Result<String> {
-    let fname = fname_from_corpus_id(corpus_id);
+    let fname = fname_from_id(corpus_id);
     let data = gen_corpus_data(secret, &fname, uname, size).await?;
     Ok(data)
 }
@@ -177,6 +177,10 @@ async fn gen_corpus_txt(
 ///   the `public/corpus` folder). **WITHOUT ITS .TXT EXTENSION**. For instance,
 ///   if I want to generate a subset of the `public/corpus/p1_train.txt` base
 ///   corpus, I need to specify the `p1_train` corpus key.
+/// * `<blacklist>` is the name of a text file (located in the same directory as
+///   the corpora). That file contains one line per word and each of these words
+///   constitute the black list. Those words are never going to be considered
+///   when producing a random sample for the student. 
 /// * `<username>` is the name of the user whose corpus is to be generated.
 /// * `<min_occurs>` is the minimum number of times the word must appear in the
 ///    corpus in order to be considered a possible candidate.
@@ -184,24 +188,26 @@ async fn gen_corpus_txt(
 /// * `<nth_random_word>` is used to distinguish several calls to the service
 ///    and generate different words in each case.
 ///
-#[rocket::get("/<secret>/<corpus_id>/<uname>/<min_occurs>/<min_length>/<nth_random_word>")]
+#[rocket::get("/<secret>/<corpus_id>/<blacklist>/<uname>/<min_occurs>/<min_length>/<nth_random_word>")]
 async fn random_word_from_static_corpus(
     secret: &str,
     corpus_id: &str,
+    blacklist: &str, 
     uname: &str,
     min_occurs: usize,
     min_length: usize,
     nth_random_word: usize,
 ) -> Result<String> {
-    let fname = fname_from_corpus_id(corpus_id);
-    let data = pick_random_word(secret, &fname, uname, min_occurs, min_length, nth_random_word).await?;
+    let corpus = fname_from_id(corpus_id);
+    let forbid = fname_from_id(blacklist);
+    let data = pick_random_word(secret, &corpus, &forbid, uname, min_occurs, min_length, nth_random_word).await?;
     Ok(data)
 }
 
 /// This endpoint serves a static file
 #[rocket::get("/<corpus_id>")]
 async fn static_file(corpus_id: &str) -> Result<NamedFile> {
-    let fname = fname_from_corpus_id(corpus_id);
+    let fname = fname_from_id(corpus_id);
     Ok(NamedFile::open(fname).await?)
 }
 
@@ -229,6 +235,7 @@ async fn main() {
 
     if cors {
         spaceship = spaceship.attach(Cors);
+
     }
 
     spaceship.launch().await.expect("unexpected failure");
