@@ -1,4 +1,4 @@
-:
+#! /bin/bash
 ###############################################################################
 # This script can be used to stop start or restart the corpus server.         #
 #                                                                             #
@@ -11,12 +11,15 @@
 # Date  : Nov. 3rd, 2021                                                      #
 ###############################################################################
 
+export HERE="/root/bin"
 export ROCKET_PROFILE=release
+
+# Just make sure the current working directory is ok
+cd $HERE
 
 # just start the server
 function start_server () {
-	nohup ./corpus -c './public/corpus' &
-	echo "server started"
+	nohup $HERE/corpus --cert="./private/linfo2263.pem" --key="./private/linfo2263.key" --corpus-dir="${HERE}/public/corpus/" >> "$HERE/server.log" &
 }
 
 # gets the pid of the service, then kill it
@@ -35,18 +38,29 @@ function stop_server () {
 		| grep "corpus"    \
 		| grep -v "grep"   \
 		| awk '{print $1}' \
-		| xargs -L 1 -J % kill %
-	echo "server stopped"
+		| xargs -L 1 kill
 }
 
 case $1 in
 	"start")
+		now=$(date)
+		echo "--------------------------------------------------------------------------------------" >> "$HERE/server.log"
+		echo "--------------------- Starting $now  -------------------------"                         >> "$HERE/server.log"
+		echo "--------------------------------------------------------------------------------------" >> "$HERE/server.log"
 		start_server
 		;;
 	"stop")
+		now=$(date)
+		echo "--------------------------------------------------------------------------------------" >> "$HERE/server.log"
+		echo "--------------------- Stopping $now --------------------------"                         >> "$HERE/server.log"
+		echo "--------------------------------------------------------------------------------------" >> "$HERE/server.log"
 		stop_server
 		;;
 	"restart"):
+		now=$(date)
+		echo "--------------------------------------------------------------------------------------" >> "$HERE/server.log"
+		echo "--------------------- Restarting $now ------------------------"                         >> "$HERE/server.log"
+		echo "--------------------------------------------------------------------------------------" >> "$HERE/server.log"
 		stop_server && start_server
 		;;
 	*)
