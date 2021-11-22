@@ -71,8 +71,8 @@ directory where `public/corpus/` is a folder containing the corpora that can
 be customized. 
 
 In order to make the service publicly available, and to make the server bind
-a chosen port you only need to edit the configuration file (`Rocket.toml`) and
-then restart the server (`server.sh restart`).
+a chosen port you only need to specify the appropriate endpoint on the command
+line while launching the server.
 
 ## Techical Note
 Because the VM on the INGI cloud use ipv6 only, and because github.com does not
@@ -109,5 +109,5 @@ This is extremely simple: all you need to do is to:
 openssl req -new -newkey rsa:2048 -nodes -keyout linfo2263.key -out linfo2263.csr
 ```
 2. Have your certificate request (csr) signed by the admins
-3. Update the file `Rocket.toml` make sure the tls configurations points towards
-   your signed certificate.
+3. Upload them on the remote VM and pass their path as argument on the command 
+   line while launching the server
