@@ -11,7 +11,7 @@
 # Date  : Nov. 3rd, 2021                                                      #
 ###############################################################################
 
-export HERE="/root/bin"
+export HERE="/root/bin.actix"
 export ROCKET_PROFILE=release
 
 # Just make sure the current working directory is ok
@@ -19,7 +19,7 @@ cd $HERE
 
 # just start the server
 function start_server () {
-	nohup $HERE/corpus --cert="./private/linfo2263.pem" --key="./private/linfo2263.key" --corpus-dir="${HERE}/public/corpus/" >> "$HERE/server.log" &
+	nohup $HERE/corpus --endpoint="[::]:443" --cert="$HERE/private/linfo2263.pem" --key="$HERE/private/linfo2263.key" --corpus-dir="${HERE}/public/corpus/" >> "$HERE/server.log" &
 }
 
 # gets the pid of the service, then kill it
