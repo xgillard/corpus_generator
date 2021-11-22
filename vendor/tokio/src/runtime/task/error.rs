@@ -1,10 +1,9 @@
 use std::any::Any;
 use std::fmt;
 use std::io;
+use std::sync::Mutex;
 
-use crate::util::SyncWrapper;
-
-cfg_rt! {
+doc_rt_core! {
     /// Task failed to execute to completion.
     pub struct JoinError {
         repr: Repr,
@@ -13,25 +12,40 @@ cfg_rt! {
 
 enum Repr {
     Cancelled,
-    Panic(SyncWrapper<Box<dyn Any + Send + 'static>>),
+    Panic(Mutex<Box<dyn Any + Send + 'static>>),
 }
 
 impl JoinError {
-    pub(crate) fn cancelled() -> JoinError {
+    #[doc(hidden)]
+    #[deprecated]
+    pub fn cancelled() -> JoinError {
+        Self::cancelled2()
+    }
+
+    pub(crate) fn cancelled2() -> JoinError {
         JoinError {
             repr: Repr::Cancelled,
         }
     }
 
-    pub(crate) fn panic(err: Box<dyn Any + Send + 'static>) -> JoinError {
+    #[doc(hidden)]
+    #[deprecated]
+    pub fn panic(err: Box<dyn Any + Send + 'static>) -> JoinError {
+        Self::panic2(err)
+    }
+
+    pub(crate) fn panic2(err: Box<dyn Any + Send + 'static>) -> JoinError {
         JoinError {
-            repr: Repr::Panic(SyncWrapper::new(err)),
+            repr: Repr::Panic(Mutex::new(err)),
         }
     }
 
     /// Returns true if the error was caused by the task being cancelled
     pub fn is_cancelled(&self) -> bool {
-        matches!(&self.repr, Repr::Cancelled)
+        match &self.repr {
+            Repr::Cancelled => true,
+            _ => false,
+        }
     }
 
     /// Returns true if the error was caused by the task panicking
@@ -51,7 +65,10 @@ impl JoinError {
     /// }
     /// ```
     pub fn is_panic(&self) -> bool {
-        matches!(&self.repr, Repr::Panic(_))
+        match &self.repr {
+            Repr::Panic(_) => true,
+            _ => false,
+        }
     }
 
     /// Consumes the join error, returning the object with which the task panicked.
@@ -107,7 +124,7 @@ impl JoinError {
     /// ```
     pub fn try_into_panic(self) -> Result<Box<dyn Any + Send + 'static>, JoinError> {
         match self.repr {
-            Repr::Panic(p) => Ok(p.into_inner()),
+            Repr::Panic(p) => Ok(p.into_inner().expect("Extracting panic from mutex")),
             _ => Err(self),
         }
     }

@@ -4,26 +4,45 @@
 //!
 //! When deserializing, the offset is assumed to be UTC.
 //!
+//! ```rust,ignore
+//! use serde_json::json;
+//!
+//! #[derive(Serialize, Deserialize)]
+//! struct S {
+//!     #[serde(with = "time::serde::timestamp")]
+//!     datetime: OffsetDateTime,
+//! }
+//!
+//! let s = S {
+//!     datetime: date!(2019-01-01).midnight().assume_utc(),
+//! };
+//! let v = json!({ "datetime": 1_546_300_800 });
+//! assert_eq!(v, serde_json::to_value(&s)?);
+//! assert_eq!(s, serde_json::from_value(v)?);
+//! ```
+//!
 //! [Unix timestamp]: https://en.wikipedia.org/wiki/Unix_time
 //! [with]: https://serde.rs/field-attrs.html#with
 
+use crate::OffsetDateTime;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::ComponentRange;
-use crate::OffsetDateTime;
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct Wrapper(i64);
 
-/// Serialize an `OffsetDateTime` as its Unix timestamp
 pub fn serialize<S: Serializer>(
     datetime: &OffsetDateTime,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    datetime.unix_timestamp().serialize(serializer)
+    Wrapper(datetime.unix_timestamp()).serialize(serializer)
 }
 
-/// Deserialize an `OffsetDateTime` from its Unix timestamp
+#[allow(single_use_lifetimes)]
 pub fn deserialize<'a, D: Deserializer<'a>>(deserializer: D) -> Result<OffsetDateTime, D::Error> {
-    OffsetDateTime::from_unix_timestamp(<_>::deserialize(deserializer)?)
-        .map_err(ComponentRange::to_invalid_serde_value::<D>)
+    Wrapper::deserialize(deserializer)
+        .map(|Wrapper(timestamp)| timestamp)
+        .map(OffsetDateTime::from_unix_timestamp)
 }
 
 /// Treat an `Option<OffsetDateTime>` as a [Unix timestamp] for the purposes of
@@ -33,29 +52,48 @@ pub fn deserialize<'a, D: Deserializer<'a>>(deserializer: D) -> Result<OffsetDat
 ///
 /// When deserializing, the offset is assumed to be UTC.
 ///
+/// ```rust,ignore
+/// use serde_json::json;
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct S {
+///     #[serde(with = "time::serde::timestamp::option")]
+///     datetime: Option<OffsetDateTime>,
+/// }
+///
+/// let s = S {
+///     datetime: Some(date!(2019-01-01).midnight().assume_utc()),
+/// };
+/// let v = json!({ "datetime": 1_546_300_800 });
+/// assert_eq!(v, serde_json::to_value(&s)?);
+/// assert_eq!(s, serde_json::from_value(v)?);
+///
+/// let s = S { datetime: None };
+/// let v = json!({ "datetime": null });
+/// assert_eq!(v, serde_json::to_value(&s)?);
+/// assert_eq!(s, serde_json::from_value(v)?);
+/// ```
+///
 /// [Unix timestamp]: https://en.wikipedia.org/wiki/Unix_time
 /// [with]: https://serde.rs/field-attrs.html#with
 pub mod option {
-    #[allow(clippy::wildcard_imports)]
     use super::*;
 
-    /// Serialize an `Option<OffsetDateTime>` as its Unix timestamp
+    #[derive(Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct Wrapper(#[serde(with = "super")] OffsetDateTime);
+
     pub fn serialize<S: Serializer>(
         option: &Option<OffsetDateTime>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        option
-            .map(OffsetDateTime::unix_timestamp)
-            .serialize(serializer)
+        option.map(Wrapper).serialize(serializer)
     }
 
-    /// Deserialize an `Option<OffsetDateTime>` from its Unix timestamp
+    #[allow(single_use_lifetimes)]
     pub fn deserialize<'a, D: Deserializer<'a>>(
         deserializer: D,
     ) -> Result<Option<OffsetDateTime>, D::Error> {
-        Option::deserialize(deserializer)?
-            .map(OffsetDateTime::from_unix_timestamp)
-            .transpose()
-            .map_err(ComponentRange::to_invalid_serde_value::<D>)
+        Option::deserialize(deserializer).map(|opt| opt.map(|Wrapper(datetime)| datetime))
     }
 }

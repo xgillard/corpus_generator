@@ -1,4 +1,3 @@
-#![cfg_attr(not(feature = "sync"), allow(unreachable_pub, dead_code))]
 //! # Implementation Details
 //!
 //! The semaphore is implemented using an intrusive linked list of waiters. An
@@ -19,7 +18,6 @@ use crate::loom::cell::UnsafeCell;
 use crate::loom::sync::atomic::AtomicUsize;
 use crate::loom::sync::{Mutex, MutexGuard};
 use crate::util::linked_list::{self, LinkedList};
-use crate::util::WakeList;
 
 use std::future::Future;
 use std::marker::PhantomPinned;
@@ -38,32 +36,19 @@ pub(crate) struct Semaphore {
 }
 
 struct Waitlist {
-    queue: LinkedList<Waiter, <Waiter as linked_list::Link>::Target>,
+    queue: LinkedList<Waiter>,
     closed: bool,
 }
 
-/// Error returned from the [`Semaphore::try_acquire`] function.
-///
-/// [`Semaphore::try_acquire`]: crate::sync::Semaphore::try_acquire
-#[derive(Debug, PartialEq)]
-pub enum TryAcquireError {
-    /// The semaphore has been [closed] and cannot issue new permits.
-    ///
-    /// [closed]: crate::sync::Semaphore::close
+/// Error returned by `Semaphore::try_acquire`.
+#[derive(Debug)]
+pub(crate) enum TryAcquireError {
     Closed,
-
-    /// The semaphore has no available permits.
     NoPermits,
 }
-/// Error returned from the [`Semaphore::acquire`] function.
-///
-/// An `acquire` operation can only fail if the semaphore has been
-/// [closed].
-///
-/// [closed]: crate::sync::Semaphore::close
-/// [`Semaphore::acquire`]: crate::sync::Semaphore::acquire
+/// Error returned by `Semaphore::acquire`.
 #[derive(Debug)]
-pub struct AcquireError(());
+pub(crate) struct AcquireError(());
 
 pub(crate) struct Acquire<'a> {
     node: Waiter,
@@ -111,13 +96,10 @@ impl Semaphore {
     /// Note that this reserves three bits of flags in the permit counter, but
     /// we only actually use one of them. However, the previous semaphore
     /// implementation used three bits, so we will continue to reserve them to
-    /// avoid a breaking change if additional flags need to be added in the
+    /// avoid a breaking change if additional flags need to be aadded in the
     /// future.
     pub(crate) const MAX_PERMITS: usize = std::usize::MAX >> 3;
     const CLOSED: usize = 1;
-    // The least-significant bit in the number of permits is reserved to use
-    // as a flag indicating that the semaphore has been closed. Consequently
-    // PERMIT_SHIFT is used to leave that bit for that purpose.
     const PERMIT_SHIFT: usize = 1;
 
     /// Creates a new semaphore with the initial number of permits
@@ -138,27 +120,6 @@ impl Semaphore {
         }
     }
 
-    /// Creates a new semaphore with the initial number of permits
-    ///
-    /// Maximum number of permits on 32-bit platforms is `1<<29`.
-    ///
-    /// If the specified number of permits exceeds the maximum permit amount
-    /// Then the value will get clamped to the maximum number of permits.
-    #[cfg(all(feature = "parking_lot", not(all(loom, test))))]
-    pub(crate) const fn const_new(mut permits: usize) -> Self {
-        // NOTE: assertions and by extension panics are still being worked on: https://github.com/rust-lang/rust/issues/74925
-        // currently we just clamp the permit count when it exceeds the max
-        permits &= Self::MAX_PERMITS;
-
-        Self {
-            permits: AtomicUsize::new(permits << Self::PERMIT_SHIFT),
-            waiters: Mutex::const_new(Waitlist {
-                queue: LinkedList::new(),
-                closed: false,
-            }),
-        }
-    }
-
     /// Returns the current number of available permits
     pub(crate) fn available_permits(&self) -> usize {
         self.permits.load(Acquire) >> Self::PERMIT_SHIFT
@@ -173,13 +134,16 @@ impl Semaphore {
         }
 
         // Assign permits to the wait queue
-        self.add_permits_locked(added, self.waiters.lock());
+        self.add_permits_locked(added, self.waiters.lock().unwrap());
     }
 
     /// Closes the semaphore. This prevents the semaphore from issuing new
     /// permits and notifies all pending waiters.
+    // This will be used once the bounded MPSC is updated to use the new
+    // semaphore implementation.
+    #[allow(dead_code)]
     pub(crate) fn close(&self) {
-        let mut waiters = self.waiters.lock();
+        let mut waiters = self.waiters.lock().unwrap();
         // If the semaphore's permits counter has enough permits for an
         // unqueued waiter to acquire all the permits it needs immediately,
         // it won't touch the wait list. Therefore, we have to set a bit on
@@ -197,11 +161,6 @@ impl Semaphore {
         }
     }
 
-    /// Returns true if the semaphore is closed
-    pub(crate) fn is_closed(&self) -> bool {
-        self.permits.load(Acquire) & Self::CLOSED == Self::CLOSED
-    }
-
     pub(crate) fn try_acquire(&self, num_permits: u32) -> Result<(), TryAcquireError> {
         assert!(
             num_permits as usize <= Self::MAX_PERMITS,
@@ -211,8 +170,8 @@ impl Semaphore {
         let num_permits = (num_permits as usize) << Self::PERMIT_SHIFT;
         let mut curr = self.permits.load(Acquire);
         loop {
-            // Has the semaphore closed?
-            if curr & Self::CLOSED == Self::CLOSED {
+            // Has the semaphore closed?git
+            if curr & Self::CLOSED > 0 {
                 return Err(TryAcquireError::Closed);
             }
 
@@ -240,12 +199,12 @@ impl Semaphore {
     /// If `rem` exceeds the number of permits needed by the wait list, the
     /// remainder are assigned back to the semaphore.
     fn add_permits_locked(&self, mut rem: usize, waiters: MutexGuard<'_, Waitlist>) {
-        let mut wakers = WakeList::new();
+        let mut wakers: [Option<Waker>; 8] = Default::default();
         let mut lock = Some(waiters);
         let mut is_empty = false;
         while rem > 0 {
-            let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock());
-            'inner: while wakers.can_push() {
+            let mut waiters = lock.take().unwrap_or_else(|| self.waiters.lock().unwrap());
+            'inner: for slot in &mut wakers[..] {
                 // Was the waiter assigned enough permits to wake it?
                 match waiters.queue.last() {
                     Some(waiter) => {
@@ -261,22 +220,17 @@ impl Semaphore {
                     }
                 };
                 let mut waiter = waiters.queue.pop_back().unwrap();
-                if let Some(waker) =
-                    unsafe { waiter.as_mut().waker.with_mut(|waker| (*waker).take()) }
-                {
-                    wakers.push(waker);
-                }
+                *slot = unsafe { waiter.as_mut().waker.with_mut(|waker| (*waker).take()) };
             }
 
             if rem > 0 && is_empty {
-                let permits = rem;
+                let permits = rem << Self::PERMIT_SHIFT;
                 assert!(
-                    permits <= Self::MAX_PERMITS,
+                    permits < Self::MAX_PERMITS,
                     "cannot add more than MAX_PERMITS permits ({})",
                     Self::MAX_PERMITS
                 );
                 let prev = self.permits.fetch_add(rem << Self::PERMIT_SHIFT, Release);
-                let prev = prev >> Self::PERMIT_SHIFT;
                 assert!(
                     prev + permits <= Self::MAX_PERMITS,
                     "number of added permits ({}) would overflow MAX_PERMITS ({})",
@@ -288,7 +242,10 @@ impl Semaphore {
 
             drop(waiters); // release the lock
 
-            wakers.wake_all();
+            wakers
+                .iter_mut()
+                .filter_map(Option::take)
+                .for_each(Waker::wake);
         }
 
         assert_eq!(rem, 0);
@@ -339,7 +296,7 @@ impl Semaphore {
                 // counter. Otherwise, if we subtract the permits and then
                 // acquire the lock, we might miss additional permits being
                 // added while waiting for the lock.
-                lock = Some(self.waiters.lock());
+                lock = Some(self.waiters.lock().unwrap());
             }
 
             match self.permits.compare_exchange(curr, next, AcqRel, Acquire) {
@@ -349,7 +306,7 @@ impl Semaphore {
                         if !queued {
                             return Ready(Ok(()));
                         } else if lock.is_none() {
-                            break self.waiters.lock();
+                            break self.waiters.lock().unwrap();
                         }
                     }
                     break lock.expect("lock must be acquired before waiting");
@@ -400,7 +357,7 @@ impl Semaphore {
 impl fmt::Debug for Semaphore {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Semaphore")
-            .field("permits", &self.available_permits())
+            .field("permits", &self.permits.load(Relaxed))
             .finish()
     }
 }
@@ -480,7 +437,7 @@ impl<'a> Acquire<'a> {
             let this = self.get_unchecked_mut();
             (
                 Pin::new_unchecked(&mut this.node),
-                this.semaphore,
+                &this.semaphore,
                 this.num_permits,
                 &mut this.queued,
             )
@@ -499,7 +456,14 @@ impl Drop for Acquire<'_> {
         // This is where we ensure safety. The future is being dropped,
         // which means we must ensure that the waiter entry is no longer stored
         // in the linked list.
-        let mut waiters = self.semaphore.waiters.lock();
+        let mut waiters = match self.semaphore.waiters.lock() {
+            Ok(lock) => lock,
+            // Removing the node from the linked list is necessary to ensure
+            // safety. Even if the lock was poisoned, we need to make sure it is
+            // removed from the linked list before dropping it --- otherwise,
+            // the list will contain a dangling pointer to this node.
+            Err(e) => e.into_inner(),
+        };
 
         // remove the entry from the list
         let node = NonNull::from(&mut self.node);
@@ -542,14 +506,20 @@ impl TryAcquireError {
     /// Returns `true` if the error was caused by a closed semaphore.
     #[allow(dead_code)] // may be used later!
     pub(crate) fn is_closed(&self) -> bool {
-        matches!(self, TryAcquireError::Closed)
+        match self {
+            TryAcquireError::Closed => true,
+            _ => false,
+        }
     }
 
     /// Returns `true` if the error was caused by calling `try_acquire` on a
     /// semaphore with no available permits.
     #[allow(dead_code)] // may be used later!
     pub(crate) fn is_no_permits(&self) -> bool {
-        matches!(self, TryAcquireError::NoPermits)
+        match self {
+            TryAcquireError::NoPermits => true,
+            _ => false,
+        }
     }
 }
 

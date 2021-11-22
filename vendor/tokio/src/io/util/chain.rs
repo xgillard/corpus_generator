@@ -1,4 +1,4 @@
-use crate::io::{AsyncBufRead, AsyncRead, ReadBuf};
+use crate::io::{AsyncBufRead, AsyncRead};
 
 use pin_project_lite::pin_project;
 use std::fmt;
@@ -84,20 +84,26 @@ where
     T: AsyncRead,
     U: AsyncRead,
 {
+    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
+        if self.first.prepare_uninitialized_buffer(buf) {
+            return true;
+        }
+        if self.second.prepare_uninitialized_buffer(buf) {
+            return true;
+        }
+        false
+    }
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         let me = self.project();
 
         if !*me.done_first {
-            let rem = buf.remaining();
-            ready!(me.first.poll_read(cx, buf))?;
-            if buf.remaining() == rem {
-                *me.done_first = true;
-            } else {
-                return Poll::Ready(Ok(()));
+            match ready!(me.first.poll_read(cx, buf)?) {
+                0 if !buf.is_empty() => *me.done_first = true,
+                n => return Poll::Ready(Ok(n)),
             }
         }
         me.second.poll_read(cx, buf)

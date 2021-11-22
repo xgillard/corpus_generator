@@ -6,7 +6,7 @@ use crate::loom::sync::atomic::AtomicUsize;
 use crate::loom::sync::{Arc, Condvar, Mutex};
 use crate::loom::thread;
 use crate::park::{Park, Unpark};
-use crate::runtime::driver::Driver;
+use crate::runtime::time;
 use crate::util::TryLock;
 
 use std::sync::atomic::Ordering::SeqCst;
@@ -42,14 +42,14 @@ const NOTIFIED: usize = 3;
 /// Shared across multiple Parker handles
 struct Shared {
     /// Shared driver. Only one thread at a time can use this
-    driver: TryLock<Driver>,
+    driver: TryLock<time::Driver>,
 
     /// Unpark handle
-    handle: <Driver as Park>::Unpark,
+    handle: <time::Driver as Park>::Unpark,
 }
 
 impl Parker {
-    pub(crate) fn new(driver: Driver) -> Parker {
+    pub(crate) fn new(driver: time::Driver) -> Parker {
         let handle = driver.unpark();
 
         Parker {
@@ -142,7 +142,7 @@ impl Inner {
 
     fn park_condvar(&self) {
         // Otherwise we need to coordinate going to sleep
-        let mut m = self.mutex.lock();
+        let mut m = self.mutex.lock().unwrap();
 
         match self
             .state
@@ -180,7 +180,7 @@ impl Inner {
         }
     }
 
-    fn park_driver(&self, driver: &mut Driver) {
+    fn park_driver(&self, driver: &mut time::Driver) {
         match self
             .state
             .compare_exchange(EMPTY, PARKED_DRIVER, SeqCst, SeqCst)
@@ -238,7 +238,7 @@ impl Inner {
         // Releasing `lock` before the call to `notify_one` means that when the
         // parked thread wakes it doesn't get woken only to have to wait for us
         // to release `lock`.
-        drop(self.mutex.lock());
+        drop(self.mutex.lock().unwrap());
 
         self.condvar.notify_one()
     }

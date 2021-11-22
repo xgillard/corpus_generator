@@ -1,6 +1,6 @@
-use crate::future::Future;
 use crate::runtime::task::{Cell, Harness, Header, Schedule, State};
 
+use std::future::Future;
 use std::ptr::NonNull;
 use std::task::{Poll, Waker};
 
@@ -22,9 +22,6 @@ pub(super) struct Vtable {
     /// The join handle has been dropped
     pub(super) drop_join_handle_slow: unsafe fn(NonNull<Header>),
 
-    /// The task is remotely aborted
-    pub(super) remote_abort: unsafe fn(NonNull<Header>),
-
     /// Scheduler is being shutdown
     pub(super) shutdown: unsafe fn(NonNull<Header>),
 }
@@ -36,18 +33,17 @@ pub(super) fn vtable<T: Future, S: Schedule>() -> &'static Vtable {
         dealloc: dealloc::<T, S>,
         try_read_output: try_read_output::<T, S>,
         drop_join_handle_slow: drop_join_handle_slow::<T, S>,
-        remote_abort: remote_abort::<T, S>,
         shutdown: shutdown::<T, S>,
     }
 }
 
 impl RawTask {
-    pub(super) fn new<T, S>(task: T, scheduler: S) -> RawTask
+    pub(super) fn new<T, S>(task: T) -> RawTask
     where
         T: Future,
         S: Schedule,
     {
-        let ptr = Box::into_raw(Cell::<_, S>::new(task, scheduler, State::new()));
+        let ptr = Box::into_raw(Cell::<_, S>::new(task, State::new()));
         let ptr = unsafe { NonNull::new_unchecked(ptr as *mut Header) };
 
         RawTask { ptr }
@@ -93,11 +89,6 @@ impl RawTask {
         let vtable = self.header().vtable;
         unsafe { (vtable.shutdown)(self.ptr) }
     }
-
-    pub(super) fn remote_abort(self) {
-        let vtable = self.header().vtable;
-        unsafe { (vtable.remote_abort)(self.ptr) }
-    }
 }
 
 impl Clone for RawTask {
@@ -132,11 +123,6 @@ unsafe fn try_read_output<T: Future, S: Schedule>(
 unsafe fn drop_join_handle_slow<T: Future, S: Schedule>(ptr: NonNull<Header>) {
     let harness = Harness::<T, S>::from_raw(ptr);
     harness.drop_join_handle_slow()
-}
-
-unsafe fn remote_abort<T: Future, S: Schedule>(ptr: NonNull<Header>) {
-    let harness = Harness::<T, S>::from_raw(ptr);
-    harness.remote_abort()
 }
 
 unsafe fn shutdown<T: Future, S: Schedule>(ptr: NonNull<Header>) {

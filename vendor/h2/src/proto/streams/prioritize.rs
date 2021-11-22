@@ -6,7 +6,7 @@ use crate::frame::{Reason, StreamId};
 use crate::codec::UserError;
 use crate::codec::UserError::*;
 
-use bytes::buf::{Buf, Take};
+use bytes::buf::ext::{BufExt, Take};
 use std::io;
 use std::task::{Context, Poll, Waker};
 use std::{cmp, fmt, mem};
@@ -18,7 +18,7 @@ use std::{cmp, fmt, mem};
 /// This is because "idle" stream IDs – those which have been initiated but
 /// have yet to receive frames – will be implicitly closed on receipt of a
 /// frame on a higher stream ID. If these queues was not ordered by stream
-/// IDs, some mechanism would be necessary to ensure that the lowest-numbered]
+/// IDs, some mechanism would be necessary to ensure that the lowest-numberedh]
 /// idle stream is opened first.
 #[derive(Debug)]
 pub(super) struct Prioritize {
@@ -545,57 +545,43 @@ impl Prioritize {
 
         // First check if there are any data chunks to take back
         if let Some(frame) = dst.take_last_data_frame() {
-            self.reclaim_frame_inner(buffer, store, frame)
-        } else {
-            false
-        }
-    }
+            tracing::trace!(
+                ?frame,
+                sz = frame.payload().inner.get_ref().remaining(),
+                "reclaimed"
+            );
 
-    fn reclaim_frame_inner<B>(
-        &mut self,
-        buffer: &mut Buffer<Frame<B>>,
-        store: &mut Store,
-        frame: frame::Data<Prioritized<B>>,
-    ) -> bool
-    where
-        B: Buf,
-    {
-        tracing::trace!(
-            ?frame,
-            sz = frame.payload().inner.get_ref().remaining(),
-            "reclaimed"
-        );
+            let mut eos = false;
+            let key = frame.payload().stream;
 
-        let mut eos = false;
-        let key = frame.payload().stream;
-
-        match mem::replace(&mut self.in_flight_data_frame, InFlightData::Nothing) {
-            InFlightData::Nothing => panic!("wasn't expecting a frame to reclaim"),
-            InFlightData::Drop => {
-                tracing::trace!("not reclaiming frame for cancelled stream");
-                return false;
-            }
-            InFlightData::DataFrame(k) => {
-                debug_assert_eq!(k, key);
-            }
-        }
-
-        let mut frame = frame.map(|prioritized| {
-            // TODO: Ensure fully written
-            eos = prioritized.end_of_stream;
-            prioritized.inner.into_inner()
-        });
-
-        if frame.payload().has_remaining() {
-            let mut stream = store.resolve(key);
-
-            if eos {
-                frame.set_end_stream(true);
+            match mem::replace(&mut self.in_flight_data_frame, InFlightData::Nothing) {
+                InFlightData::Nothing => panic!("wasn't expecting a frame to reclaim"),
+                InFlightData::Drop => {
+                    tracing::trace!("not reclaiming frame for cancelled stream");
+                    return false;
+                }
+                InFlightData::DataFrame(k) => {
+                    debug_assert_eq!(k, key);
+                }
             }
 
-            self.push_back_frame(frame.into(), buffer, &mut stream);
+            let mut frame = frame.map(|prioritized| {
+                // TODO: Ensure fully written
+                eos = prioritized.end_of_stream;
+                prioritized.inner.into_inner()
+            });
 
-            return true;
+            if frame.payload().has_remaining() {
+                let mut stream = store.resolve(key);
+
+                if eos {
+                    frame.set_end_stream(true);
+                }
+
+                self.push_back_frame(frame.into(), buffer, &mut stream);
+
+                return true;
+            }
         }
 
         false
@@ -861,12 +847,8 @@ where
         self.inner.remaining()
     }
 
-    fn chunk(&self) -> &[u8] {
-        self.inner.chunk()
-    }
-
-    fn chunks_vectored<'a>(&'a self, dst: &mut [std::io::IoSlice<'a>]) -> usize {
-        self.inner.chunks_vectored(dst)
+    fn bytes(&self) -> &[u8] {
+        self.inner.bytes()
     }
 
     fn advance(&mut self, cnt: usize) {

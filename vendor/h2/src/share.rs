@@ -125,6 +125,11 @@ pub struct StreamId(u32);
 /// See method level documentation for more details on receiving data. See
 /// [`FlowControl`] for more details on inbound flow control.
 ///
+/// Note that this type implements [`Stream`], yielding the received data frames.
+/// When this implementation is used, the capacity is immediately released when
+/// the data is yielded. It is recommended to only use this API when the data
+/// will not be retained in memory for extended periods of time.
+///
 /// [`client::ResponseFuture`]: client/struct.ResponseFuture.html
 /// [`server::Connection`]: server/struct.Connection.html
 /// [`FlowControl`]: struct.FlowControl.html
@@ -173,7 +178,7 @@ pub struct RecvStream {
 ///
 /// * A new stream is activated. The receive window is initialized to 1024 (the
 ///   value of the initial window size for this connection).
-/// * A `DATA` frame is received containing a payload of 600 bytes.
+/// * A `DATA` frame is received containing a payload of 400 bytes.
 /// * The receive window size is reduced to 424 bytes.
 /// * [`release_capacity`] is called with 200.
 /// * The receive window size is now 624 bytes. The peer may send no more than
@@ -401,7 +406,7 @@ impl RecvStream {
         futures_util::future::poll_fn(move |cx| self.poll_trailers(cx)).await
     }
 
-    /// Poll for the next data frame.
+    #[doc(hidden)]
     pub fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, crate::Error>>> {
         self.inner.inner.poll_data(cx).map_err_(Into::into)
     }

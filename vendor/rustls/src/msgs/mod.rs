@@ -1,19 +1,19 @@
 #[macro_use]
 mod macros;
 
-pub mod alert;
-pub mod base;
-pub mod ccs;
 pub mod codec;
-pub mod deframer;
+pub mod base;
 #[allow(non_camel_case_types)]
 pub mod enums;
-pub mod fragmenter;
+pub mod alert;
 #[allow(non_camel_case_types)]
 pub mod handshake;
-pub mod hsjoiner;
+pub mod ccs;
 pub mod message;
 pub mod persist;
+pub mod deframer;
+pub mod fragmenter;
+pub mod hsjoiner;
 
 #[cfg(test)]
 mod handshake_test;
@@ -31,9 +31,9 @@ mod message_test;
 mod test {
     #[test]
     fn smoketest() {
-        use super::codec::Codec;
         use super::codec::Reader;
         use super::message::Message;
+        use super::codec::Codec;
         let bytes = include_bytes!("handshake-test.1.bin");
         let mut r = Reader::init(bytes);
 

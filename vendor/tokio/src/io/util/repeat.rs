@@ -1,4 +1,4 @@
-use crate::io::{AsyncRead, ReadBuf};
+use crate::io::AsyncRead;
 
 use std::io;
 use std::pin::Pin;
@@ -47,17 +47,19 @@ cfg_io_util! {
 }
 
 impl AsyncRead for Repeat {
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
+        false
+    }
     #[inline]
     fn poll_read(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        // TODO: could be faster, but should we unsafe it?
-        while buf.remaining() != 0 {
-            buf.put_slice(&[self.byte]);
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        for byte in &mut *buf {
+            *byte = self.byte;
         }
-        Poll::Ready(Ok(()))
+        Poll::Ready(Ok(buf.len()))
     }
 }
 

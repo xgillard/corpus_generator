@@ -27,9 +27,7 @@ impl AsRef<[u8]> for Certificate {
 impl fmt::Debug for Certificate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use super::bs_debug::BsDebug;
-        f.debug_tuple("Certificate")
-            .field(&BsDebug(&self.0))
-            .finish()
+        f.debug_tuple("Certificate").field(&BsDebug(&self.0)).finish()
     }
 }
 
@@ -39,9 +37,6 @@ mod test {
 
     #[test]
     fn certificate_debug() {
-        assert_eq!(
-            "Certificate(b\"ab\")",
-            format!("{:?}", Certificate(b"ab".to_vec()))
-        );
+        assert_eq!("Certificate(b\"ab\")", format!("{:?}", Certificate(b"ab".to_vec())));
     }
 }

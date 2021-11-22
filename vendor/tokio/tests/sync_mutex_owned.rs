@@ -58,11 +58,10 @@ async fn aborted_future_1() {
         let m2 = m1.clone();
         // Try to lock mutex in a future that is aborted prematurely
         timeout(Duration::from_millis(1u64), async move {
-            let iv = interval(Duration::from_millis(1000));
-            tokio::pin!(iv);
+            let mut iv = interval(Duration::from_millis(1000));
             m2.lock_owned().await;
-            iv.as_mut().tick().await;
-            iv.as_mut().tick().await;
+            iv.tick().await;
+            iv.tick().await;
         })
         .await
         .unwrap_err();
@@ -106,12 +105,12 @@ fn try_lock_owned() {
     let m: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
     {
         let g1 = m.clone().try_lock_owned();
-        assert!(g1.is_ok());
+        assert_eq!(g1.is_ok(), true);
         let g2 = m.clone().try_lock_owned();
-        assert!(!g2.is_ok());
+        assert_eq!(g2.is_ok(), false);
     }
     let g3 = m.try_lock_owned();
-    assert!(g3.is_ok());
+    assert_eq!(g3.is_ok(), true);
 }
 
 #[tokio::test]

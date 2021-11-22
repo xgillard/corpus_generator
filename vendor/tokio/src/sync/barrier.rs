@@ -1,12 +1,15 @@
-use crate::loom::sync::Mutex;
 use crate::sync::watch;
 
-/// A barrier enables multiple tasks to synchronize the beginning of some computation.
+use std::sync::Mutex;
+
+/// A barrier enables multiple threads to synchronize the beginning of some computation.
 ///
 /// ```
 /// # #[tokio::main]
 /// # async fn main() {
 /// use tokio::sync::Barrier;
+///
+/// use futures::future::join_all;
 /// use std::sync::Arc;
 ///
 /// let mut handles = Vec::with_capacity(10);
@@ -15,25 +18,17 @@ use crate::sync::watch;
 ///     let c = barrier.clone();
 ///     // The same messages will be printed together.
 ///     // You will NOT see any interleaving.
-///     handles.push(tokio::spawn(async move {
+///     handles.push(async move {
 ///         println!("before wait");
-///         let wait_result = c.wait().await;
+///         let wr = c.wait().await;
 ///         println!("after wait");
-///         wait_result
-///     }));
+///         wr
+///     });
 /// }
-///
-/// // Will not resolve until all "after wait" messages have been printed
-/// let mut num_leaders = 0;
-/// for handle in handles {
-///     let wait_result = handle.await.unwrap();
-///     if wait_result.is_leader() {
-///         num_leaders += 1;
-///     }
-/// }
-///
+/// // Will not resolve until all "before wait" messages have been printed
+/// let wrs = join_all(handles).await;
 /// // Exactly one barrier will resolve as the "leader"
-/// assert_eq!(num_leaders, 1);
+/// assert_eq!(wrs.into_iter().filter(|wr| wr.is_leader()).count(), 1);
 /// # }
 /// ```
 #[derive(Debug)]
@@ -51,10 +46,10 @@ struct BarrierState {
 }
 
 impl Barrier {
-    /// Creates a new barrier that can block a given number of tasks.
+    /// Creates a new barrier that can block a given number of threads.
     ///
-    /// A barrier will block `n`-1 tasks which call [`Barrier::wait`] and then wake up all
-    /// tasks at once when the `n`th task calls `wait`.
+    /// A barrier will block `n`-1 threads which call [`Barrier::wait`] and then wake up all
+    /// threads at once when the `n`th thread calls `wait`.
     pub fn new(mut n: usize) -> Barrier {
         let (waker, wait) = crate::sync::watch::channel(0);
 
@@ -78,11 +73,11 @@ impl Barrier {
 
     /// Does not resolve until all tasks have rendezvoused here.
     ///
-    /// Barriers are re-usable after all tasks have rendezvoused once, and can
+    /// Barriers are re-usable after all threads have rendezvoused once, and can
     /// be used continuously.
     ///
     /// A single (arbitrary) future will receive a [`BarrierWaitResult`] that returns `true` from
-    /// [`BarrierWaitResult::is_leader`] when returning from this function, and all other tasks
+    /// [`BarrierWaitResult::is_leader`] when returning from this function, and all other threads
     /// will receive a result that will return `false` from `is_leader`.
     pub async fn wait(&self) -> BarrierWaitResult {
         // NOTE: we are taking a _synchronous_ lock here.
@@ -93,7 +88,7 @@ impl Barrier {
         // NOTE: the extra scope here is so that the compiler doesn't think `state` is held across
         // a yield point, and thus marks the returned future as !Send.
         let generation = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock().unwrap();
             let generation = state.generation;
             state.arrived += 1;
             if state.arrived == self.n {
@@ -101,7 +96,7 @@ impl Barrier {
                 // wake everyone, increment the generation, and return
                 state
                     .waker
-                    .send(state.generation)
+                    .broadcast(state.generation)
                     .expect("there is at least one receiver");
                 state.arrived = 0;
                 state.generation += 1;
@@ -115,11 +110,9 @@ impl Barrier {
         let mut wait = self.wait.clone();
 
         loop {
-            let _ = wait.changed().await;
-
             // note that the first time through the loop, this _will_ yield a generation
             // immediately, since we cloned a receiver that has never seen any values.
-            if *wait.borrow() >= generation {
+            if wait.recv().await.expect("sender hasn't been closed") >= generation {
                 break;
             }
         }
@@ -128,14 +121,14 @@ impl Barrier {
     }
 }
 
-/// A `BarrierWaitResult` is returned by `wait` when all tasks in the `Barrier` have rendezvoused.
+/// A `BarrierWaitResult` is returned by `wait` when all threads in the `Barrier` have rendezvoused.
 #[derive(Debug, Clone)]
 pub struct BarrierWaitResult(bool);
 
 impl BarrierWaitResult {
-    /// Returns `true` if this task from wait is the "leader task".
+    /// Returns `true` if this thread from wait is the "leader thread".
     ///
-    /// Only one task will have `true` returned from their result, all other tasks will have
+    /// Only one thread will have `true` returned from their result, all other threads will have
     /// `false` returned.
     pub fn is_leader(&self) -> bool {
         self.0

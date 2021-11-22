@@ -8,10 +8,11 @@
 //! split has no associated overhead and enforces all invariants at the type
 //! level.
 
-use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
+use crate::io::{AsyncRead, AsyncWrite};
 use crate::net::UnixStream;
 
 use std::io;
+use std::mem::MaybeUninit;
 use std::net::Shutdown;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -19,27 +20,29 @@ use std::task::{Context, Poll};
 /// Borrowed read half of a [`UnixStream`], created by [`split`].
 ///
 /// Reading from a `ReadHalf` is usually done using the convenience methods found on the
-/// [`AsyncReadExt`] trait.
+/// [`AsyncReadExt`] trait. Examples import this trait through [the prelude].
 ///
 /// [`UnixStream`]: UnixStream
 /// [`split`]: UnixStream::split()
 /// [`AsyncReadExt`]: trait@crate::io::AsyncReadExt
+/// [the prelude]: crate::prelude
 #[derive(Debug)]
 pub struct ReadHalf<'a>(&'a UnixStream);
 
 /// Borrowed write half of a [`UnixStream`], created by [`split`].
 ///
-/// Note that in the [`AsyncWrite`] implementation of this type, [`poll_shutdown`] will
+/// Note that in the [`AsyncWrite`] implemenation of this type, [`poll_shutdown`] will
 /// shut down the UnixStream stream in the write direction.
 ///
 /// Writing to an `WriteHalf` is usually done using the convenience methods found
-/// on the [`AsyncWriteExt`] trait.
+/// on the [`AsyncWriteExt`] trait. Examples import this trait through [the prelude].
 ///
 /// [`UnixStream`]: UnixStream
 /// [`split`]: UnixStream::split()
 /// [`AsyncWrite`]: trait@crate::io::AsyncWrite
 /// [`poll_shutdown`]: fn@crate::io::AsyncWrite::poll_shutdown
 /// [`AsyncWriteExt`]: trait@crate::io::AsyncWriteExt
+/// [the prelude]: crate::prelude
 #[derive(Debug)]
 pub struct WriteHalf<'a>(&'a UnixStream);
 
@@ -48,11 +51,15 @@ pub(crate) fn split(stream: &mut UnixStream) -> (ReadHalf<'_>, WriteHalf<'_>) {
 }
 
 impl AsyncRead for ReadHalf<'_> {
+    unsafe fn prepare_uninitialized_buffer(&self, _: &mut [MaybeUninit<u8>]) -> bool {
+        false
+    }
+
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         self.0.poll_read_priv(cx, buf)
     }
 }
@@ -66,24 +73,12 @@ impl AsyncWrite for WriteHalf<'_> {
         self.0.poll_write_priv(cx, buf)
     }
 
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        self.0.poll_write_vectored_priv(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.0.is_write_vectored()
-    }
-
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.0.shutdown_std(Shutdown::Write).into()
+        self.0.shutdown(Shutdown::Write).into()
     }
 }
 

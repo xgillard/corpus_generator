@@ -48,7 +48,9 @@ async fn test_symlink() {
     let src_2 = src.clone();
     let dst_2 = dst.clone();
 
-    assert!(fs::symlink(src_2.clone(), dst_2.clone()).await.is_ok());
+    assert!(fs::os::unix::symlink(src_2.clone(), dst_2.clone())
+        .await
+        .is_ok());
 
     let mut content = String::new();
 

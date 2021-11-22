@@ -45,7 +45,8 @@ fn test_drop_on_notify() {
     // shutting down. Then, when the task handle is dropped, the task itself is
     // dropped.
 
-    let rt = runtime::Builder::new_current_thread()
+    let mut rt = runtime::Builder::new()
+        .basic_scheduler()
         .enable_all()
         .build()
         .unwrap();
@@ -55,7 +56,7 @@ fn test_drop_on_notify() {
     // Define a task that just drains the listener
     let task = Arc::new(Task::new(async move {
         // Create a listener
-        let listener = assert_ok!(TcpListener::bind("127.0.0.1:0").await);
+        let mut listener = assert_ok!(TcpListener::bind("127.0.0.1:0").await);
 
         // Send the address
         let addr = listener.local_addr().unwrap();
@@ -67,10 +68,11 @@ fn test_drop_on_notify() {
     }));
 
     {
-        let _enter = rt.enter();
-        let waker = waker_ref(&task);
-        let mut cx = Context::from_waker(&waker);
-        assert_pending!(task.future.lock().unwrap().as_mut().poll(&mut cx));
+        rt.enter(|| {
+            let waker = waker_ref(&task);
+            let mut cx = Context::from_waker(&waker);
+            assert_pending!(task.future.lock().unwrap().as_mut().poll(&mut cx));
+        });
     }
 
     // Get the address
@@ -83,17 +85,4 @@ fn test_drop_on_notify() {
 
     // Force the reactor to turn
     rt.block_on(async {});
-}
-
-#[test]
-#[should_panic(
-    expected = "A Tokio 1.x context was found, but IO is disabled. Call `enable_io` on the runtime builder to enable IO."
-)]
-fn panics_when_io_disabled() {
-    let rt = runtime::Builder::new_current_thread().build().unwrap();
-
-    rt.block_on(async {
-        let _ =
-            tokio::net::TcpListener::from_std(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
-    });
 }

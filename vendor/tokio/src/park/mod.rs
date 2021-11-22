@@ -34,14 +34,18 @@
 //! * `park_timeout` does the same as `park` but allows specifying a maximum
 //!   time to block the thread for.
 
-cfg_rt! {
-    pub(crate) mod either;
+cfg_resource_drivers! {
+    mod either;
+    pub(crate) use self::either::Either;
 }
 
-#[cfg(any(feature = "rt", feature = "sync"))]
-pub(crate) mod thread;
+mod thread;
+pub(crate) use self::thread::ParkThread;
 
-use std::fmt::Debug;
+cfg_block_on! {
+    pub(crate) use self::thread::{CachedParkThread, ParkError};
+}
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +55,7 @@ pub(crate) trait Park {
     type Unpark: Unpark;
 
     /// Error returned by `park`
-    type Error: Debug;
+    type Error;
 
     /// Gets a new `Unpark` handle associated with this `Park` instance.
     fn unpark(&self) -> Self::Unpark;

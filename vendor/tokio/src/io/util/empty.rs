@@ -1,4 +1,4 @@
-use crate::io::{AsyncBufRead, AsyncRead, ReadBuf};
+use crate::io::{AsyncBufRead, AsyncRead};
 
 use std::fmt;
 use std::io;
@@ -47,13 +47,16 @@ cfg_io_util! {
 }
 
 impl AsyncRead for Empty {
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
+        false
+    }
     #[inline]
     fn poll_read(
         self: Pin<&mut Self>,
         _: &mut Context<'_>,
-        _: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+        _: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(0))
     }
 }
 

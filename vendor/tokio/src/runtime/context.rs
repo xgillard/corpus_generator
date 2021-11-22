@@ -12,62 +12,62 @@ pub(crate) fn current() -> Option<Handle> {
 }
 
 cfg_io_driver! {
-    pub(crate) fn io_handle() -> crate::runtime::driver::IoHandle {
-        CONTEXT.with(|ctx| {
-            let ctx = ctx.borrow();
-            ctx.as_ref().expect(crate::util::error::CONTEXT_MISSING_ERROR).io_handle.clone()
-        })
-    }
-}
-
-cfg_signal_internal! {
-    #[cfg(unix)]
-    pub(crate) fn signal_handle() -> crate::runtime::driver::SignalHandle {
-        CONTEXT.with(|ctx| {
-            let ctx = ctx.borrow();
-            ctx.as_ref().expect(crate::util::error::CONTEXT_MISSING_ERROR).signal_handle.clone()
+    pub(crate) fn io_handle() -> crate::runtime::io::Handle {
+        CONTEXT.with(|ctx| match *ctx.borrow() {
+            Some(ref ctx) => ctx.io_handle.clone(),
+            None => Default::default(),
         })
     }
 }
 
 cfg_time! {
-    pub(crate) fn time_handle() -> crate::runtime::driver::TimeHandle {
-        CONTEXT.with(|ctx| {
-            let ctx = ctx.borrow();
-            ctx.as_ref().expect(crate::util::error::CONTEXT_MISSING_ERROR).time_handle.clone()
+    pub(crate) fn time_handle() -> crate::runtime::time::Handle {
+        CONTEXT.with(|ctx| match *ctx.borrow() {
+            Some(ref ctx) => ctx.time_handle.clone(),
+            None => Default::default(),
         })
     }
 
     cfg_test_util! {
-        pub(crate) fn clock() -> Option<crate::runtime::driver::Clock> {
-            CONTEXT.with(|ctx| (*ctx.borrow()).as_ref().map(|ctx| ctx.clock.clone()))
+        pub(crate) fn clock() -> Option<crate::runtime::time::Clock> {
+            CONTEXT.with(|ctx| match *ctx.borrow() {
+                Some(ref ctx) => Some(ctx.clock.clone()),
+                None => None,
+            })
         }
     }
 }
 
-cfg_rt! {
+cfg_rt_core! {
     pub(crate) fn spawn_handle() -> Option<crate::runtime::Spawner> {
-        CONTEXT.with(|ctx| (*ctx.borrow()).as_ref().map(|ctx| ctx.spawner.clone()))
+        CONTEXT.with(|ctx| match *ctx.borrow() {
+            Some(ref ctx) => Some(ctx.spawner.clone()),
+            None => None,
+        })
     }
 }
 
 /// Set this [`Handle`] as the current active [`Handle`].
 ///
 /// [`Handle`]: Handle
-pub(crate) fn enter(new: Handle) -> EnterGuard {
-    CONTEXT.with(|ctx| {
-        let old = ctx.borrow_mut().replace(new);
-        EnterGuard(old)
-    })
-}
+pub(crate) fn enter<F, R>(new: Handle, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    struct DropGuard(Option<Handle>);
 
-#[derive(Debug)]
-pub(crate) struct EnterGuard(Option<Handle>);
-
-impl Drop for EnterGuard {
-    fn drop(&mut self) {
-        CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.0.take();
-        });
+    impl Drop for DropGuard {
+        fn drop(&mut self) {
+            CONTEXT.with(|ctx| {
+                *ctx.borrow_mut() = self.0.take();
+            });
+        }
     }
+
+    let _guard = CONTEXT.with(|ctx| {
+        let old = ctx.borrow_mut().replace(new);
+        DropGuard(old)
+    });
+
+    f()
 }

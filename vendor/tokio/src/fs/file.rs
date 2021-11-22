@@ -3,10 +3,9 @@
 //! [`File`]: File
 
 use self::State::*;
-use crate::fs::asyncify;
+use crate::fs::{asyncify, sys};
 use crate::io::blocking::Buf;
-use crate::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf};
-use crate::sync::Mutex;
+use crate::io::{AsyncRead, AsyncSeek, AsyncWrite};
 
 use std::fmt;
 use std::fs::{Metadata, Permissions};
@@ -18,19 +17,6 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Poll::*;
-
-#[cfg(test)]
-use super::mocks::spawn_blocking;
-#[cfg(test)]
-use super::mocks::JoinHandle;
-#[cfg(test)]
-use super::mocks::MockFile as StdFile;
-#[cfg(not(test))]
-use crate::blocking::spawn_blocking;
-#[cfg(not(test))]
-use crate::blocking::JoinHandle;
-#[cfg(not(test))]
-use std::fs::File as StdFile;
 
 /// A reference to an open file on the filesystem.
 ///
@@ -50,7 +36,8 @@ use std::fs::File as StdFile;
 /// the data to disk.
 ///
 /// Reading and writing to a `File` is usually done using the convenience
-/// methods found on the [`AsyncReadExt`] and [`AsyncWriteExt`] traits.
+/// methods found on the [`AsyncReadExt`] and [`AsyncWriteExt`] traits. Examples
+/// import these traits through [the prelude].
 ///
 /// [std]: struct@std::fs::File
 /// [`AsyncSeek`]: trait@crate::io::AsyncSeek
@@ -58,6 +45,7 @@ use std::fs::File as StdFile;
 /// [`sync_all`]: fn@crate::fs::File::sync_all
 /// [`AsyncReadExt`]: trait@crate::io::AsyncReadExt
 /// [`AsyncWriteExt`]: trait@crate::io::AsyncWriteExt
+/// [the prelude]: crate::prelude
 ///
 /// # Examples
 ///
@@ -65,7 +53,7 @@ use std::fs::File as StdFile;
 ///
 /// ```no_run
 /// use tokio::fs::File;
-/// use tokio::io::AsyncWriteExt; // for write_all()
+/// use tokio::prelude::*; // for write_all()
 ///
 /// # async fn dox() -> std::io::Result<()> {
 /// let mut file = File::create("foo.txt").await?;
@@ -78,7 +66,7 @@ use std::fs::File as StdFile;
 ///
 /// ```no_run
 /// use tokio::fs::File;
-/// use tokio::io::AsyncReadExt; // for read_to_end()
+/// use tokio::prelude::*; // for read_to_end()
 ///
 /// # async fn dox() -> std::io::Result<()> {
 /// let mut file = File::open("foo.txt").await?;
@@ -91,25 +79,19 @@ use std::fs::File as StdFile;
 /// # }
 /// ```
 pub struct File {
-    std: Arc<StdFile>,
-    inner: Mutex<Inner>,
-}
-
-struct Inner {
+    std: Arc<sys::File>,
     state: State,
 
     /// Errors from writes/flushes are returned in write/flush calls. If a write
     /// error is observed while performing a read, it is saved until the next
     /// write / flush call.
     last_write_err: Option<io::ErrorKind>,
-
-    pos: u64,
 }
 
 #[derive(Debug)]
 enum State {
     Idle(Option<Buf>),
-    Busy(JoinHandle<(Operation, Buf)>),
+    Busy(sys::Blocking<(Operation, Buf)>),
 }
 
 #[derive(Debug)]
@@ -136,7 +118,7 @@ impl File {
     ///
     /// ```no_run
     /// use tokio::fs::File;
-    /// use tokio::io::AsyncReadExt;
+    /// use tokio::prelude::*;
     ///
     /// # async fn dox() -> std::io::Result<()> {
     /// let mut file = File::open("foo.txt").await?;
@@ -155,7 +137,7 @@ impl File {
     /// [`AsyncReadExt`]: trait@crate::io::AsyncReadExt
     pub async fn open(path: impl AsRef<Path>) -> io::Result<File> {
         let path = path.as_ref().to_owned();
-        let std = asyncify(|| StdFile::open(path)).await?;
+        let std = asyncify(|| sys::File::open(path)).await?;
 
         Ok(File::from_std(std))
     }
@@ -180,7 +162,7 @@ impl File {
     ///
     /// ```no_run
     /// use tokio::fs::File;
-    /// use tokio::io::AsyncWriteExt;
+    /// use tokio::prelude::*;
     ///
     /// # async fn dox() -> std::io::Result<()> {
     /// let mut file = File::create("foo.txt").await?;
@@ -195,7 +177,7 @@ impl File {
     /// [`AsyncWriteExt`]: trait@crate::io::AsyncWriteExt
     pub async fn create(path: impl AsRef<Path>) -> io::Result<File> {
         let path = path.as_ref().to_owned();
-        let std_file = asyncify(move || StdFile::create(path)).await?;
+        let std_file = asyncify(move || sys::File::create(path)).await?;
         Ok(File::from_std(std_file))
     }
 
@@ -212,14 +194,73 @@ impl File {
     /// let std_file = std::fs::File::open("foo.txt").unwrap();
     /// let file = tokio::fs::File::from_std(std_file);
     /// ```
-    pub fn from_std(std: StdFile) -> File {
+    pub fn from_std(std: sys::File) -> File {
         File {
             std: Arc::new(std),
-            inner: Mutex::new(Inner {
-                state: State::Idle(Some(Buf::with_capacity(0))),
-                last_write_err: None,
-                pos: 0,
-            }),
+            state: State::Idle(Some(Buf::with_capacity(0))),
+            last_write_err: None,
+        }
+    }
+
+    /// Seeks to an offset, in bytes, in a stream.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tokio::fs::File;
+    /// use tokio::prelude::*;
+    ///
+    /// use std::io::SeekFrom;
+    ///
+    /// # async fn dox() -> std::io::Result<()> {
+    /// let mut file = File::open("foo.txt").await?;
+    /// file.seek(SeekFrom::Start(6)).await?;
+    ///
+    /// let mut contents = vec![0u8; 10];
+    /// file.read_exact(&mut contents).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// The [`read_exact`] method is defined on the [`AsyncReadExt`] trait.
+    ///
+    /// [`read_exact`]: fn@crate::io::AsyncReadExt::read_exact
+    /// [`AsyncReadExt`]: trait@crate::io::AsyncReadExt
+    pub async fn seek(&mut self, mut pos: SeekFrom) -> io::Result<u64> {
+        self.complete_inflight().await;
+
+        let mut buf = match self.state {
+            Idle(ref mut buf_cell) => buf_cell.take().unwrap(),
+            _ => unreachable!(),
+        };
+
+        // Factor in any unread data from the buf
+        if !buf.is_empty() {
+            let n = buf.discard_read();
+
+            if let SeekFrom::Current(ref mut offset) = pos {
+                *offset += n;
+            }
+        }
+
+        let std = self.std.clone();
+
+        // Start the operation
+        self.state = Busy(sys::run(move || {
+            let res = (&*std).seek(pos);
+            (Operation::Seek(res), buf)
+        }));
+
+        let (op, buf) = match self.state {
+            Idle(_) => unreachable!(),
+            Busy(ref mut rx) => rx.await.unwrap(),
+        };
+
+        self.state = Idle(Some(buf));
+
+        match op {
+            Operation::Seek(res) => res,
+            _ => unreachable!(),
         }
     }
 
@@ -232,7 +273,7 @@ impl File {
     ///
     /// ```no_run
     /// use tokio::fs::File;
-    /// use tokio::io::AsyncWriteExt;
+    /// use tokio::prelude::*;
     ///
     /// # async fn dox() -> std::io::Result<()> {
     /// let mut file = File::create("foo.txt").await?;
@@ -246,9 +287,8 @@ impl File {
     ///
     /// [`write_all`]: fn@crate::io::AsyncWriteExt::write_all
     /// [`AsyncWriteExt`]: trait@crate::io::AsyncWriteExt
-    pub async fn sync_all(&self) -> io::Result<()> {
-        let mut inner = self.inner.lock().await;
-        inner.complete_inflight().await;
+    pub async fn sync_all(&mut self) -> io::Result<()> {
+        self.complete_inflight().await;
 
         let std = self.std.clone();
         asyncify(move || std.sync_all()).await
@@ -267,7 +307,7 @@ impl File {
     ///
     /// ```no_run
     /// use tokio::fs::File;
-    /// use tokio::io::AsyncWriteExt;
+    /// use tokio::prelude::*;
     ///
     /// # async fn dox() -> std::io::Result<()> {
     /// let mut file = File::create("foo.txt").await?;
@@ -281,9 +321,8 @@ impl File {
     ///
     /// [`write_all`]: fn@crate::io::AsyncWriteExt::write_all
     /// [`AsyncWriteExt`]: trait@crate::io::AsyncWriteExt
-    pub async fn sync_data(&self) -> io::Result<()> {
-        let mut inner = self.inner.lock().await;
-        inner.complete_inflight().await;
+    pub async fn sync_data(&mut self) -> io::Result<()> {
+        self.complete_inflight().await;
 
         let std = self.std.clone();
         asyncify(move || std.sync_data()).await
@@ -305,7 +344,7 @@ impl File {
     ///
     /// ```no_run
     /// use tokio::fs::File;
-    /// use tokio::io::AsyncWriteExt;
+    /// use tokio::prelude::*;
     ///
     /// # async fn dox() -> std::io::Result<()> {
     /// let mut file = File::create("foo.txt").await?;
@@ -319,11 +358,10 @@ impl File {
     ///
     /// [`write_all`]: fn@crate::io::AsyncWriteExt::write_all
     /// [`AsyncWriteExt`]: trait@crate::io::AsyncWriteExt
-    pub async fn set_len(&self, size: u64) -> io::Result<()> {
-        let mut inner = self.inner.lock().await;
-        inner.complete_inflight().await;
+    pub async fn set_len(&mut self, size: u64) -> io::Result<()> {
+        self.complete_inflight().await;
 
-        let mut buf = match inner.state {
+        let mut buf = match self.state {
             Idle(ref mut buf_cell) => buf_cell.take().unwrap(),
             _ => unreachable!(),
         };
@@ -336,7 +374,7 @@ impl File {
 
         let std = self.std.clone();
 
-        inner.state = Busy(spawn_blocking(move || {
+        self.state = Busy(sys::run(move || {
             let res = if let Some(seek) = seek {
                 (&*std).seek(seek).and_then(|_| std.set_len(size))
             } else {
@@ -348,17 +386,15 @@ impl File {
             (Operation::Seek(res), buf)
         }));
 
-        let (op, buf) = match inner.state {
+        let (op, buf) = match self.state {
             Idle(_) => unreachable!(),
             Busy(ref mut rx) => rx.await?,
         };
 
-        inner.state = Idle(Some(buf));
+        self.state = Idle(Some(buf));
 
         match op {
-            Operation::Seek(res) => res.map(|pos| {
-                inner.pos = pos;
-            }),
+            Operation::Seek(res) => res.map(|_| ()),
             _ => unreachable!(),
         }
     }
@@ -422,8 +458,8 @@ impl File {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn into_std(mut self) -> StdFile {
-        self.inner.get_mut().complete_inflight().await;
+    pub async fn into_std(mut self) -> sys::File {
+        self.complete_inflight().await;
         Arc::try_unwrap(self.std).expect("Arc::try_unwrap failed")
     }
 
@@ -447,7 +483,7 @@ impl File {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn try_into_std(mut self) -> Result<StdFile, Self> {
+    pub fn try_into_std(mut self) -> Result<sys::File, Self> {
         match Arc::try_unwrap(self.std) {
             Ok(file) => Ok(file),
             Err(std_file_arc) => {
@@ -490,32 +526,42 @@ impl File {
         let std = self.std.clone();
         asyncify(move || std.set_permissions(perm)).await
     }
+
+    async fn complete_inflight(&mut self) {
+        use crate::future::poll_fn;
+
+        if let Err(e) = poll_fn(|cx| Pin::new(&mut *self).poll_flush(cx)).await {
+            self.last_write_err = Some(e.kind());
+        }
+    }
 }
 
 impl AsyncRead for File {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        dst: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let me = self.get_mut();
-        let inner = me.inner.get_mut();
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
+        // https://github.com/rust-lang/rust/blob/09c817eeb29e764cfc12d0a8d94841e3ffe34023/src/libstd/fs.rs#L668
+        false
+    }
 
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         loop {
-            match inner.state {
+            match self.state {
                 Idle(ref mut buf_cell) => {
                     let mut buf = buf_cell.take().unwrap();
 
                     if !buf.is_empty() {
-                        buf.copy_to(dst);
+                        let n = buf.copy_to(dst);
                         *buf_cell = Some(buf);
-                        return Ready(Ok(()));
+                        return Ready(Ok(n));
                     }
 
                     buf.ensure_capacity_for(dst);
-                    let std = me.std.clone();
+                    let std = self.std.clone();
 
-                    inner.state = Busy(spawn_blocking(move || {
+                    self.state = Busy(sys::run(move || {
                         let res = buf.read_from(&mut &*std);
                         (Operation::Read(res), buf)
                     }));
@@ -525,32 +571,29 @@ impl AsyncRead for File {
 
                     match op {
                         Operation::Read(Ok(_)) => {
-                            buf.copy_to(dst);
-                            inner.state = Idle(Some(buf));
-                            return Ready(Ok(()));
+                            let n = buf.copy_to(dst);
+                            self.state = Idle(Some(buf));
+                            return Ready(Ok(n));
                         }
                         Operation::Read(Err(e)) => {
                             assert!(buf.is_empty());
 
-                            inner.state = Idle(Some(buf));
+                            self.state = Idle(Some(buf));
                             return Ready(Err(e));
                         }
                         Operation::Write(Ok(_)) => {
                             assert!(buf.is_empty());
-                            inner.state = Idle(Some(buf));
+                            self.state = Idle(Some(buf));
                             continue;
                         }
                         Operation::Write(Err(e)) => {
-                            assert!(inner.last_write_err.is_none());
-                            inner.last_write_err = Some(e.kind());
-                            inner.state = Idle(Some(buf));
+                            assert!(self.last_write_err.is_none());
+                            self.last_write_err = Some(e.kind());
+                            self.state = Idle(Some(buf));
                         }
-                        Operation::Seek(result) => {
+                        Operation::Seek(_) => {
                             assert!(buf.is_empty());
-                            inner.state = Idle(Some(buf));
-                            if let Ok(pos) = result {
-                                inner.pos = pos;
-                            }
+                            self.state = Idle(Some(buf));
                             continue;
                         }
                     }
@@ -561,13 +604,13 @@ impl AsyncRead for File {
 }
 
 impl AsyncSeek for File {
-    fn start_seek(self: Pin<&mut Self>, mut pos: SeekFrom) -> io::Result<()> {
-        let me = self.get_mut();
-        let inner = me.inner.get_mut();
-
+    fn start_seek(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        mut pos: SeekFrom,
+    ) -> Poll<io::Result<()>> {
         loop {
-            match inner.state {
-                Busy(_) => panic!("must wait for poll_complete before calling start_seek"),
+            match self.state {
                 Idle(ref mut buf_cell) => {
                     let mut buf = buf_cell.take().unwrap();
 
@@ -580,41 +623,49 @@ impl AsyncSeek for File {
                         }
                     }
 
-                    let std = me.std.clone();
+                    let std = self.std.clone();
 
-                    inner.state = Busy(spawn_blocking(move || {
+                    self.state = Busy(sys::run(move || {
                         let res = (&*std).seek(pos);
                         (Operation::Seek(res), buf)
                     }));
-                    return Ok(());
+
+                    return Ready(Ok(()));
+                }
+                Busy(ref mut rx) => {
+                    let (op, buf) = ready!(Pin::new(rx).poll(cx))?;
+                    self.state = Idle(Some(buf));
+
+                    match op {
+                        Operation::Read(_) => {}
+                        Operation::Write(Err(e)) => {
+                            assert!(self.last_write_err.is_none());
+                            self.last_write_err = Some(e.kind());
+                        }
+                        Operation::Write(_) => {}
+                        Operation::Seek(_) => {}
+                    }
                 }
             }
         }
     }
 
     fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
-        let inner = self.inner.get_mut();
-
         loop {
-            match inner.state {
-                Idle(_) => return Poll::Ready(Ok(inner.pos)),
+            match self.state {
+                Idle(_) => panic!("must call start_seek before calling poll_complete"),
                 Busy(ref mut rx) => {
                     let (op, buf) = ready!(Pin::new(rx).poll(cx))?;
-                    inner.state = Idle(Some(buf));
+                    self.state = Idle(Some(buf));
 
                     match op {
                         Operation::Read(_) => {}
                         Operation::Write(Err(e)) => {
-                            assert!(inner.last_write_err.is_none());
-                            inner.last_write_err = Some(e.kind());
+                            assert!(self.last_write_err.is_none());
+                            self.last_write_err = Some(e.kind());
                         }
                         Operation::Write(_) => {}
-                        Operation::Seek(res) => {
-                            if let Ok(pos) = res {
-                                inner.pos = pos;
-                            }
-                            return Ready(res);
-                        }
+                        Operation::Seek(res) => return Ready(res),
                     }
                 }
             }
@@ -624,19 +675,16 @@ impl AsyncSeek for File {
 
 impl AsyncWrite for File {
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         src: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let me = self.get_mut();
-        let inner = me.inner.get_mut();
-
-        if let Some(e) = inner.last_write_err.take() {
+        if let Some(e) = self.last_write_err.take() {
             return Ready(Err(e.into()));
         }
 
         loop {
-            match inner.state {
+            match self.state {
                 Idle(ref mut buf_cell) => {
                     let mut buf = buf_cell.take().unwrap();
 
@@ -647,9 +695,9 @@ impl AsyncWrite for File {
                     };
 
                     let n = buf.copy_from(src);
-                    let std = me.std.clone();
+                    let std = self.std.clone();
 
-                    inner.state = Busy(spawn_blocking(move || {
+                    self.state = Busy(sys::run(move || {
                         let res = if let Some(seek) = seek {
                             (&*std).seek(seek).and_then(|_| buf.write_to(&mut &*std))
                         } else {
@@ -663,7 +711,7 @@ impl AsyncWrite for File {
                 }
                 Busy(ref mut rx) => {
                     let (op, buf) = ready!(Pin::new(rx).poll(cx))?;
-                    inner.state = Idle(Some(buf));
+                    self.state = Idle(Some(buf));
 
                     match op {
                         Operation::Read(_) => {
@@ -689,17 +737,32 @@ impl AsyncWrite for File {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        let inner = self.inner.get_mut();
-        inner.poll_flush(cx)
+        if let Some(e) = self.last_write_err.take() {
+            return Ready(Err(e.into()));
+        }
+
+        let (op, buf) = match self.state {
+            Idle(_) => return Ready(Ok(())),
+            Busy(ref mut rx) => ready!(Pin::new(rx).poll(cx))?,
+        };
+
+        // The buffer is not used here
+        self.state = Idle(Some(buf));
+
+        match op {
+            Operation::Read(_) => Ready(Ok(())),
+            Operation::Write(res) => Ready(res),
+            Operation::Seek(_) => Ready(Ok(())),
+        }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        self.poll_flush(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
 
-impl From<StdFile> for File {
-    fn from(std: StdFile) -> Self {
+impl From<sys::File> for File {
+    fn from(std: sys::File) -> Self {
         Self::from_std(std)
     }
 }
@@ -719,56 +782,9 @@ impl std::os::unix::io::AsRawFd for File {
     }
 }
 
-#[cfg(unix)]
-impl std::os::unix::io::FromRawFd for File {
-    unsafe fn from_raw_fd(fd: std::os::unix::io::RawFd) -> Self {
-        StdFile::from_raw_fd(fd).into()
-    }
-}
-
 #[cfg(windows)]
 impl std::os::windows::io::AsRawHandle for File {
     fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
         self.std.as_raw_handle()
     }
 }
-
-#[cfg(windows)]
-impl std::os::windows::io::FromRawHandle for File {
-    unsafe fn from_raw_handle(handle: std::os::windows::io::RawHandle) -> Self {
-        StdFile::from_raw_handle(handle).into()
-    }
-}
-
-impl Inner {
-    async fn complete_inflight(&mut self) {
-        use crate::future::poll_fn;
-
-        if let Err(e) = poll_fn(|cx| Pin::new(&mut *self).poll_flush(cx)).await {
-            self.last_write_err = Some(e.kind());
-        }
-    }
-
-    fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        if let Some(e) = self.last_write_err.take() {
-            return Ready(Err(e.into()));
-        }
-
-        let (op, buf) = match self.state {
-            Idle(_) => return Ready(Ok(())),
-            Busy(ref mut rx) => ready!(Pin::new(rx).poll(cx))?,
-        };
-
-        // The buffer is not used here
-        self.state = Idle(Some(buf));
-
-        match op {
-            Operation::Read(_) => Ready(Ok(())),
-            Operation::Write(res) => Ready(res),
-            Operation::Seek(_) => Ready(Ok(())),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests;

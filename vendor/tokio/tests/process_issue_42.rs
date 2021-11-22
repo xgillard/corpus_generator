@@ -18,16 +18,14 @@ async fn issue_42() {
     let join_handles = (0..10usize).map(|_| {
         task::spawn(async {
             let processes = (0..10usize).map(|i| {
-                let mut child = Command::new("echo")
+                Command::new("echo")
                     .arg(format!("I am spawned process #{}", i))
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .kill_on_drop(true)
                     .spawn()
-                    .unwrap();
-
-                async move { child.wait().await }
+                    .unwrap()
             });
 
             join_all(processes).await;

@@ -1,47 +1,48 @@
-use crate::future::Future;
-use crate::runtime::basic_scheduler;
-use crate::runtime::stats::RuntimeStats;
-use crate::task::JoinHandle;
+cfg_rt_core! {
+    use crate::runtime::basic_scheduler;
+    use crate::task::JoinHandle;
 
-cfg_rt_multi_thread! {
+    use std::future::Future;
+}
+
+cfg_rt_threaded! {
     use crate::runtime::thread_pool;
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum Spawner {
+    Shell,
+    #[cfg(feature = "rt-core")]
     Basic(basic_scheduler::Spawner),
-    #[cfg(feature = "rt-multi-thread")]
+    #[cfg(feature = "rt-threaded")]
     ThreadPool(thread_pool::Spawner),
 }
 
 impl Spawner {
     pub(crate) fn shutdown(&mut self) {
-        #[cfg(feature = "rt-multi-thread")]
+        #[cfg(feature = "rt-threaded")]
         {
             if let Spawner::ThreadPool(spawner) = self {
                 spawner.shutdown();
             }
         }
     }
+}
 
-    pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        match self {
-            Spawner::Basic(spawner) => spawner.spawn(future),
-            #[cfg(feature = "rt-multi-thread")]
-            Spawner::ThreadPool(spawner) => spawner.spawn(future),
-        }
-    }
-
-    #[cfg_attr(not(all(tokio_unstable, feature = "stats")), allow(dead_code))]
-    pub(crate) fn stats(&self) -> &RuntimeStats {
-        match self {
-            Spawner::Basic(spawner) => spawner.stats(),
-            #[cfg(feature = "rt-multi-thread")]
-            Spawner::ThreadPool(spawner) => spawner.stats(),
+cfg_rt_core! {
+    impl Spawner {
+        pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+        where
+            F: Future + Send + 'static,
+            F::Output: Send + 'static,
+        {
+            match self {
+                Spawner::Shell => panic!("spawning not enabled for runtime"),
+                #[cfg(feature = "rt-core")]
+                Spawner::Basic(spawner) => spawner.spawn(future),
+                #[cfg(feature = "rt-threaded")]
+                Spawner::ThreadPool(spawner) => spawner.spawn(future),
+            }
         }
     }
 }

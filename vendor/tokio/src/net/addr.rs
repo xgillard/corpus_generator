@@ -8,6 +8,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 /// # DNS
 ///
 /// Implementations of `ToSocketAddrs` for string types require a DNS lookup.
+/// These implementations are only provided when Tokio is used with the
+/// **`dns`** feature flag.
 ///
 /// # Calling
 ///
@@ -21,15 +23,6 @@ pub trait ToSocketAddrs: sealed::ToSocketAddrsPriv {}
 
 type ReadyFuture<T> = future::Ready<io::Result<T>>;
 
-cfg_net! {
-    pub(crate) fn to_socket_addrs<T>(arg: T) -> T::Future
-    where
-        T: ToSocketAddrs,
-    {
-        arg.to_socket_addrs(sealed::Internal)
-    }
-}
-
 // ===== impl &impl ToSocketAddrs =====
 
 impl<T: ToSocketAddrs + ?Sized> ToSocketAddrs for &T {}
@@ -41,8 +34,8 @@ where
     type Iter = T::Iter;
     type Future = T::Future;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-        (**self).to_socket_addrs(sealed::Internal)
+    fn to_socket_addrs(&self) -> Self::Future {
+        (**self).to_socket_addrs()
     }
 }
 
@@ -54,7 +47,7 @@ impl sealed::ToSocketAddrsPriv for SocketAddr {
     type Iter = std::option::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
+    fn to_socket_addrs(&self) -> Self::Future {
         let iter = Some(*self).into_iter();
         future::ok(iter)
     }
@@ -68,8 +61,8 @@ impl sealed::ToSocketAddrsPriv for SocketAddrV4 {
     type Iter = std::option::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-        SocketAddr::V4(*self).to_socket_addrs(sealed::Internal)
+    fn to_socket_addrs(&self) -> Self::Future {
+        SocketAddr::V4(*self).to_socket_addrs()
     }
 }
 
@@ -81,8 +74,8 @@ impl sealed::ToSocketAddrsPriv for SocketAddrV6 {
     type Iter = std::option::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-        SocketAddr::V6(*self).to_socket_addrs(sealed::Internal)
+    fn to_socket_addrs(&self) -> Self::Future {
+        SocketAddr::V6(*self).to_socket_addrs()
     }
 }
 
@@ -94,7 +87,7 @@ impl sealed::ToSocketAddrsPriv for (IpAddr, u16) {
     type Iter = std::option::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
+    fn to_socket_addrs(&self) -> Self::Future {
         let iter = Some(SocketAddr::from(*self)).into_iter();
         future::ok(iter)
     }
@@ -108,9 +101,9 @@ impl sealed::ToSocketAddrsPriv for (Ipv4Addr, u16) {
     type Iter = std::option::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
+    fn to_socket_addrs(&self) -> Self::Future {
         let (ip, port) = *self;
-        SocketAddrV4::new(ip, port).to_socket_addrs(sealed::Internal)
+        SocketAddrV4::new(ip, port).to_socket_addrs()
     }
 }
 
@@ -122,9 +115,9 @@ impl sealed::ToSocketAddrsPriv for (Ipv6Addr, u16) {
     type Iter = std::option::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
+    fn to_socket_addrs(&self) -> Self::Future {
         let (ip, port) = *self;
-        SocketAddrV6::new(ip, port, 0, 0).to_socket_addrs(sealed::Internal)
+        SocketAddrV6::new(ip, port, 0, 0).to_socket_addrs()
     }
 }
 
@@ -136,13 +129,13 @@ impl sealed::ToSocketAddrsPriv for &[SocketAddr] {
     type Iter = std::vec::IntoIter<SocketAddr>;
     type Future = ReadyFuture<Self::Iter>;
 
-    fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
+    fn to_socket_addrs(&self) -> Self::Future {
         let iter = self.to_vec().into_iter();
         future::ok(iter)
     }
 }
 
-cfg_net! {
+cfg_dns! {
     // ===== impl str =====
 
     impl ToSocketAddrs for str {}
@@ -151,23 +144,23 @@ cfg_net! {
         type Iter = sealed::OneOrMore;
         type Future = sealed::MaybeReady;
 
-        fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-            use crate::blocking::spawn_blocking;
+        fn to_socket_addrs(&self) -> Self::Future {
+            use crate::runtime::spawn_blocking;
             use sealed::MaybeReady;
 
             // First check if the input parses as a socket address
             let res: Result<SocketAddr, _> = self.parse();
 
             if let Ok(addr) = res {
-                return MaybeReady(sealed::State::Ready(Some(addr)));
+                return MaybeReady::Ready(Some(addr));
             }
 
             // Run DNS lookup on the blocking pool
             let s = self.to_owned();
 
-            MaybeReady(sealed::State::Blocking(spawn_blocking(move || {
+            MaybeReady::Blocking(spawn_blocking(move || {
                 std::net::ToSocketAddrs::to_socket_addrs(&s)
-            })))
+            }))
         }
     }
 
@@ -179,8 +172,8 @@ cfg_net! {
         type Iter = sealed::OneOrMore;
         type Future = sealed::MaybeReady;
 
-        fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-            use crate::blocking::spawn_blocking;
+        fn to_socket_addrs(&self) -> Self::Future {
+            use crate::runtime::spawn_blocking;
             use sealed::MaybeReady;
 
             let (host, port) = *self;
@@ -190,21 +183,21 @@ cfg_net! {
                 let addr = SocketAddrV4::new(addr, port);
                 let addr = SocketAddr::V4(addr);
 
-                return MaybeReady(sealed::State::Ready(Some(addr)));
+                return MaybeReady::Ready(Some(addr));
             }
 
             if let Ok(addr) = host.parse::<Ipv6Addr>() {
                 let addr = SocketAddrV6::new(addr, port, 0, 0);
                 let addr = SocketAddr::V6(addr);
 
-                return MaybeReady(sealed::State::Ready(Some(addr)));
+                return MaybeReady::Ready(Some(addr));
             }
 
             let host = host.to_owned();
 
-            MaybeReady(sealed::State::Blocking(spawn_blocking(move || {
+            MaybeReady::Blocking(spawn_blocking(move || {
                 std::net::ToSocketAddrs::to_socket_addrs(&(&host[..], port))
-            })))
+            }))
         }
     }
 
@@ -216,8 +209,8 @@ cfg_net! {
         type Iter = sealed::OneOrMore;
         type Future = sealed::MaybeReady;
 
-        fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-            (self.0.as_str(), self.1).to_socket_addrs(sealed::Internal)
+        fn to_socket_addrs(&self) -> Self::Future {
+            (self.0.as_str(), self.1).to_socket_addrs()
         }
     }
 
@@ -229,8 +222,8 @@ cfg_net! {
         type Iter = <str as sealed::ToSocketAddrsPriv>::Iter;
         type Future = <str as sealed::ToSocketAddrsPriv>::Future;
 
-        fn to_socket_addrs(&self, _: sealed::Internal) -> Self::Future {
-            (&self[..]).to_socket_addrs(sealed::Internal)
+        fn to_socket_addrs(&self) -> Self::Future {
+            (&self[..]).to_socket_addrs()
         }
     }
 }
@@ -244,31 +237,27 @@ pub(crate) mod sealed {
     use std::io;
     use std::net::SocketAddr;
 
-    #[doc(hidden)]
-    pub trait ToSocketAddrsPriv {
-        type Iter: Iterator<Item = SocketAddr> + Send + 'static;
-        type Future: Future<Output = io::Result<Self::Iter>> + Send + 'static;
-
-        fn to_socket_addrs(&self, internal: Internal) -> Self::Future;
-    }
-
-    #[allow(missing_debug_implementations)]
-    pub struct Internal;
-
-    cfg_net! {
-        use crate::blocking::JoinHandle;
+    cfg_dns! {
+        use crate::task::JoinHandle;
 
         use std::option;
         use std::pin::Pin;
         use std::task::{Context, Poll};
         use std::vec;
+    }
 
+    #[doc(hidden)]
+    pub trait ToSocketAddrsPriv {
+        type Iter: Iterator<Item = SocketAddr> + Send + 'static;
+        type Future: Future<Output = io::Result<Self::Iter>> + Send + 'static;
+
+        fn to_socket_addrs(&self) -> Self::Future;
+    }
+
+    cfg_dns! {
         #[doc(hidden)]
         #[derive(Debug)]
-        pub struct MaybeReady(pub(super) State);
-
-        #[derive(Debug)]
-        pub(super) enum State {
+        pub enum MaybeReady {
             Ready(Option<SocketAddr>),
             Blocking(JoinHandle<io::Result<vec::IntoIter<SocketAddr>>>),
         }
@@ -284,12 +273,12 @@ pub(crate) mod sealed {
             type Output = io::Result<OneOrMore>;
 
             fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                match self.0 {
-                    State::Ready(ref mut i) => {
+                match *self {
+                    MaybeReady::Ready(ref mut i) => {
                         let iter = OneOrMore::One(i.take().into_iter());
                         Poll::Ready(Ok(iter))
                     }
-                    State::Blocking(ref mut rx) => {
+                    MaybeReady::Blocking(ref mut rx) => {
                         let res = ready!(Pin::new(rx).poll(cx))?.map(OneOrMore::More);
 
                         Poll::Ready(res)

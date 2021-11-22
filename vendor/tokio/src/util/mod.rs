@@ -3,57 +3,17 @@ cfg_io_driver! {
     pub(crate) mod slab;
 }
 
-#[cfg(any(
-    // io driver uses `WakeList` directly
-    feature = "net",
-    feature = "process",
-    // `sync` enables `Notify` and `batch_semaphore`, which require `WakeList`.
-    feature = "sync",
-    // `fs` uses `batch_semaphore`, which requires `WakeList`.
-    feature = "fs",
-    // rt and signal use `Notify`, which requires `WakeList`.
-    feature = "rt",
-    feature = "signal",
-))]
-mod wake_list;
-#[cfg(any(
-    feature = "net",
-    feature = "process",
-    feature = "sync",
-    feature = "fs",
-    feature = "rt",
-    feature = "signal",
-))]
-pub(crate) use wake_list::WakeList;
-
-#[cfg(any(
-    feature = "fs",
-    feature = "net",
-    feature = "process",
-    feature = "rt",
-    feature = "sync",
-    feature = "signal",
-    feature = "time",
-))]
+#[cfg(any(feature = "sync", feature = "rt-core"))]
 pub(crate) mod linked_list;
 
-#[cfg(any(feature = "rt-multi-thread", feature = "macros"))]
+#[cfg(any(feature = "rt-threaded", feature = "macros", feature = "stream"))]
 mod rand;
 
-cfg_rt! {
-    mod wake;
-    pub(crate) use wake::WakerRef;
-    pub(crate) use wake::{waker_ref, Wake};
+mod wake;
+pub(crate) use wake::{waker_ref, Wake};
 
-    mod sync_wrapper;
-    pub(crate) use sync_wrapper::SyncWrapper;
-
-    mod vec_deque_cell;
-    pub(crate) use vec_deque_cell::VecDequeCell;
-}
-
-cfg_rt_multi_thread! {
-    pub(crate) use self::rand::FastRand;
+cfg_rt_threaded! {
+    pub(crate) use rand::FastRand;
 
     mod try_lock;
     pub(crate) use try_lock::TryLock;
@@ -61,15 +21,8 @@ cfg_rt_multi_thread! {
 
 pub(crate) mod trace;
 
-#[cfg(any(feature = "macros"))]
+#[cfg(any(feature = "macros", feature = "stream"))]
 #[cfg_attr(not(feature = "macros"), allow(unreachable_pub))]
-pub use self::rand::thread_rng_n;
+pub use rand::thread_rng_n;
 
-#[cfg(any(
-    feature = "rt",
-    feature = "time",
-    feature = "net",
-    feature = "process",
-    all(unix, feature = "signal")
-))]
-pub(crate) mod error;
+pub(crate) mod intrusive_double_linked_list;

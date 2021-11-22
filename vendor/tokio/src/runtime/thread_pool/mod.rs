@@ -9,12 +9,13 @@ use self::idle::Idle;
 mod worker;
 pub(crate) use worker::Launch;
 
-pub(crate) use worker::block_in_place;
+cfg_blocking! {
+    pub(crate) use worker::block_in_place;
+}
 
 use crate::loom::sync::Arc;
-use crate::runtime::stats::RuntimeStats;
-use crate::runtime::task::JoinHandle;
-use crate::runtime::{Callback, Parker};
+use crate::runtime::task::{self, JoinHandle};
+use crate::runtime::Parker;
 
 use std::fmt;
 use std::future::Future;
@@ -31,7 +32,7 @@ pub(crate) struct ThreadPool {
 ///
 /// The `Spawner` handle is *only* used for spawning new futures. It does not
 /// impact the lifecycle of the thread pool in any way. The thread pool may
-/// shut down while there are outstanding `Spawner` instances.
+/// shutdown while there are outstanding `Spawner` instances.
 ///
 /// `Spawner` instances are obtained by calling [`ThreadPool::spawner`].
 ///
@@ -44,13 +45,8 @@ pub(crate) struct Spawner {
 // ===== impl ThreadPool =====
 
 impl ThreadPool {
-    pub(crate) fn new(
-        size: usize,
-        parker: Parker,
-        before_park: Option<Callback>,
-        after_unpark: Option<Callback>,
-    ) -> (ThreadPool, Launch) {
-        let (shared, launch) = worker::create(size, parker, before_park, after_unpark);
+    pub(crate) fn new(size: usize, parker: Parker) -> (ThreadPool, Launch) {
+        let (shared, launch) = worker::create(size, parker);
         let spawner = Spawner { shared };
         let thread_pool = ThreadPool { spawner };
 
@@ -63,6 +59,15 @@ impl ThreadPool {
     /// threads.
     pub(crate) fn spawner(&self) -> &Spawner {
         &self.spawner
+    }
+
+    /// Spawns a task
+    pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.spawner.spawn(future)
     }
 
     /// Blocks the current thread waiting for the future to complete.
@@ -96,18 +101,16 @@ impl Spawner {
     /// Spawns a future onto the thread pool
     pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
-        F: crate::future::Future + Send + 'static,
+        F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        worker::Shared::bind_new_task(&self.shared, future)
+        let (task, handle) = task::joinable(future);
+        self.shared.schedule(task, false);
+        handle
     }
 
     pub(crate) fn shutdown(&mut self) {
         self.shared.close();
-    }
-
-    pub(crate) fn stats(&self) -> &RuntimeStats {
-        self.shared.stats()
     }
 }
 

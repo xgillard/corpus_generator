@@ -1,23 +1,15 @@
 use crate::io::AsyncSeek;
-
-use pin_project_lite::pin_project;
 use std::future::Future;
 use std::io::{self, SeekFrom};
-use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pin_project! {
-    /// Future for the [`seek`](crate::io::AsyncSeekExt::seek) method.
-    #[derive(Debug)]
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub struct Seek<'a, S: ?Sized> {
-        seek: &'a mut S,
-        pos: Option<SeekFrom>,
-        // Make this future `!Unpin` for compatibility with async trait methods.
-        #[pin]
-        _pin: PhantomPinned,
-    }
+/// Future for the [`seek`](crate::io::AsyncSeekExt::seek) method.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct Seek<'a, S: ?Sized> {
+    seek: &'a mut S,
+    pos: Option<SeekFrom>,
 }
 
 pub(crate) fn seek<S>(seek: &mut S, pos: SeekFrom) -> Seek<'_, S>
@@ -27,7 +19,6 @@ where
     Seek {
         seek,
         pos: Some(pos),
-        _pin: PhantomPinned,
     }
 }
 
@@ -37,21 +28,29 @@ where
 {
     type Output = io::Result<u64>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let me = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let me = &mut *self;
         match me.pos {
-            Some(pos) => {
-                // ensure no seek in progress
-                ready!(Pin::new(&mut *me.seek).poll_complete(cx))?;
-                match Pin::new(&mut *me.seek).start_seek(*pos) {
-                    Ok(()) => {
-                        *me.pos = None;
-                        Pin::new(&mut *me.seek).poll_complete(cx)
-                    }
-                    Err(e) => Poll::Ready(Err(e)),
+            Some(pos) => match Pin::new(&mut me.seek).start_seek(cx, pos) {
+                Poll::Ready(Ok(())) => {
+                    me.pos = None;
+                    Pin::new(&mut me.seek).poll_complete(cx)
                 }
-            }
-            None => Pin::new(&mut *me.seek).poll_complete(cx),
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                Poll::Pending => Poll::Pending,
+            },
+            None => Pin::new(&mut me.seek).poll_complete(cx),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_unpin() {
+        use std::marker::PhantomPinned;
+        crate::is_unpin::<Seek<'_, PhantomPinned>>();
     }
 }

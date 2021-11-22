@@ -44,7 +44,7 @@
 /// Stream + Unpin`.
 ///
 /// [`Future`]: trait@std::future::Future
-/// [`Box::pin`]: std::boxed::Box::pin
+/// [`Box::pin`]: #
 ///
 /// # Usage
 ///
@@ -71,7 +71,7 @@
 ///
 /// ```
 /// use tokio::{pin, select};
-/// use tokio_stream::{self as stream, StreamExt};
+/// use tokio::stream::{self, StreamExt};
 ///
 /// async fn my_async_fn() {
 ///     // async logic here

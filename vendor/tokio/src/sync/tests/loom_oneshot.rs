@@ -75,10 +75,8 @@ impl Future for OnClose<'_> {
     type Output = bool;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<bool> {
-        let fut = self.get_mut().tx.closed();
-        crate::pin!(fut);
-
-        Ready(fut.poll(cx).is_ready())
+        let res = self.get_mut().tx.poll_closed(cx);
+        Ready(res.is_ready())
     }
 }
 

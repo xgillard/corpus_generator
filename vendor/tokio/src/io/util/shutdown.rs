@@ -1,24 +1,18 @@
 use crate::io::AsyncWrite;
 
-use pin_project_lite::pin_project;
 use std::future::Future;
 use std::io;
-use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pin_project! {
+cfg_io_util! {
     /// A future used to shutdown an I/O object.
     ///
     /// Created by the [`AsyncWriteExt::shutdown`][shutdown] function.
     /// [shutdown]: crate::io::AsyncWriteExt::shutdown
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
     #[derive(Debug)]
     pub struct Shutdown<'a, A: ?Sized> {
         a: &'a mut A,
-        // Make this future `!Unpin` for compatibility with async trait methods.
-        #[pin]
-        _pin: PhantomPinned,
     }
 }
 
@@ -27,10 +21,7 @@ pub(super) fn shutdown<A>(a: &mut A) -> Shutdown<'_, A>
 where
     A: AsyncWrite + Unpin + ?Sized,
 {
-    Shutdown {
-        a,
-        _pin: PhantomPinned,
-    }
+    Shutdown { a }
 }
 
 impl<A> Future for Shutdown<'_, A>
@@ -39,8 +30,19 @@ where
 {
     type Output = io::Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let me = self.project();
-        Pin::new(me.a).poll_shutdown(cx)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let me = &mut *self;
+        Pin::new(&mut *me.a).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_unpin() {
+        use std::marker::PhantomPinned;
+        crate::is_unpin::<Shutdown<'_, PhantomPinned>>();
     }
 }

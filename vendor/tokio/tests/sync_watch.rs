@@ -4,41 +4,41 @@
 
 use tokio::sync::watch;
 use tokio_test::task::spawn;
-use tokio_test::{assert_pending, assert_ready, assert_ready_err, assert_ready_ok};
+use tokio_test::{assert_pending, assert_ready};
 
 #[test]
 fn single_rx_recv() {
     let (tx, mut rx) = watch::channel("one");
 
     {
-        // Not initially notified
-        let mut t = spawn(rx.changed());
-        assert_pending!(t.poll());
+        let mut t = spawn(rx.recv());
+        let v = assert_ready!(t.poll()).unwrap();
+        assert_eq!(v, "one");
     }
-    assert_eq!(*rx.borrow(), "one");
 
     {
-        let mut t = spawn(rx.changed());
+        let mut t = spawn(rx.recv());
+
         assert_pending!(t.poll());
 
-        tx.send("two").unwrap();
+        tx.broadcast("two").unwrap();
 
         assert!(t.is_woken());
 
-        assert_ready_ok!(t.poll());
+        let v = assert_ready!(t.poll()).unwrap();
+        assert_eq!(v, "two");
     }
-    assert_eq!(*rx.borrow(), "two");
 
     {
-        let mut t = spawn(rx.changed());
+        let mut t = spawn(rx.recv());
+
         assert_pending!(t.poll());
 
         drop(tx);
 
-        assert!(t.is_woken());
-        assert_ready_err!(t.poll());
+        let res = assert_ready!(t.poll());
+        assert!(res.is_none());
     }
-    assert_eq!(*rx.borrow(), "two");
 }
 
 #[test]
@@ -47,65 +47,82 @@ fn multi_rx() {
     let mut rx2 = rx1.clone();
 
     {
-        let mut t1 = spawn(rx1.changed());
-        let mut t2 = spawn(rx2.changed());
+        let mut t1 = spawn(rx1.recv());
+        let mut t2 = spawn(rx2.recv());
 
-        assert_pending!(t1.poll());
-        assert_pending!(t2.poll());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "one");
+
+        let res = assert_ready!(t2.poll());
+        assert_eq!(res.unwrap(), "one");
     }
-    assert_eq!(*rx1.borrow(), "one");
-    assert_eq!(*rx2.borrow(), "one");
 
-    let mut t2 = spawn(rx2.changed());
+    let mut t2 = spawn(rx2.recv());
 
     {
-        let mut t1 = spawn(rx1.changed());
+        let mut t1 = spawn(rx1.recv());
 
         assert_pending!(t1.poll());
         assert_pending!(t2.poll());
 
-        tx.send("two").unwrap();
+        tx.broadcast("two").unwrap();
 
         assert!(t1.is_woken());
         assert!(t2.is_woken());
 
-        assert_ready_ok!(t1.poll());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "two");
     }
-    assert_eq!(*rx1.borrow(), "two");
 
     {
-        let mut t1 = spawn(rx1.changed());
+        let mut t1 = spawn(rx1.recv());
 
         assert_pending!(t1.poll());
 
-        tx.send("three").unwrap();
+        tx.broadcast("three").unwrap();
 
         assert!(t1.is_woken());
         assert!(t2.is_woken());
 
-        assert_ready_ok!(t1.poll());
-        assert_ready_ok!(t2.poll());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "three");
+
+        let res = assert_ready!(t2.poll());
+        assert_eq!(res.unwrap(), "three");
     }
-    assert_eq!(*rx1.borrow(), "three");
 
     drop(t2);
 
-    assert_eq!(*rx2.borrow(), "three");
-
     {
-        let mut t1 = spawn(rx1.changed());
-        let mut t2 = spawn(rx2.changed());
+        let mut t1 = spawn(rx1.recv());
+        let mut t2 = spawn(rx2.recv());
 
         assert_pending!(t1.poll());
         assert_pending!(t2.poll());
 
-        tx.send("four").unwrap();
+        tx.broadcast("four").unwrap();
 
-        assert_ready_ok!(t1.poll());
-        assert_ready_ok!(t2.poll());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "four");
+        drop(t1);
+
+        let mut t1 = spawn(rx1.recv());
+        assert_pending!(t1.poll());
+
+        drop(tx);
+
+        assert!(t1.is_woken());
+        let res = assert_ready!(t1.poll());
+        assert!(res.is_none());
+
+        let res = assert_ready!(t2.poll());
+        assert_eq!(res.unwrap(), "four");
+
+        drop(t2);
+        let mut t2 = spawn(rx2.recv());
+        let res = assert_ready!(t2.poll());
+        assert!(res.is_none());
     }
-    assert_eq!(*rx1.borrow(), "four");
-    assert_eq!(*rx2.borrow(), "four");
 }
 
 #[test]
@@ -116,46 +133,52 @@ fn rx_observes_final_value() {
     drop(tx);
 
     {
-        let mut t1 = spawn(rx.changed());
-        assert_ready_err!(t1.poll());
+        let mut t1 = spawn(rx.recv());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "one");
     }
-    assert_eq!(*rx.borrow(), "one");
+
+    {
+        let mut t1 = spawn(rx.recv());
+        let res = assert_ready!(t1.poll());
+        assert!(res.is_none());
+    }
 
     // Sending a value
 
     let (tx, mut rx) = watch::channel("one");
 
-    tx.send("two").unwrap();
+    tx.broadcast("two").unwrap();
 
     {
-        let mut t1 = spawn(rx.changed());
-        assert_ready_ok!(t1.poll());
+        let mut t1 = spawn(rx.recv());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "two");
     }
-    assert_eq!(*rx.borrow(), "two");
 
     {
-        let mut t1 = spawn(rx.changed());
+        let mut t1 = spawn(rx.recv());
         assert_pending!(t1.poll());
 
-        tx.send("three").unwrap();
+        tx.broadcast("three").unwrap();
         drop(tx);
 
         assert!(t1.is_woken());
 
-        assert_ready_ok!(t1.poll());
+        let res = assert_ready!(t1.poll());
+        assert_eq!(res.unwrap(), "three");
     }
-    assert_eq!(*rx.borrow(), "three");
 
     {
-        let mut t1 = spawn(rx.changed());
-        assert_ready_err!(t1.poll());
+        let mut t1 = spawn(rx.recv());
+        let res = assert_ready!(t1.poll());
+        assert!(res.is_none());
     }
-    assert_eq!(*rx.borrow(), "three");
 }
 
 #[test]
 fn poll_close() {
-    let (tx, rx) = watch::channel("one");
+    let (mut tx, rx) = watch::channel("one");
 
     {
         let mut t = spawn(tx.closed());
@@ -167,37 +190,42 @@ fn poll_close() {
         assert_ready!(t.poll());
     }
 
-    assert!(tx.send("two").is_err());
+    assert!(tx.broadcast("two").is_err());
 }
 
 #[test]
-fn borrow_and_update() {
+fn stream_impl() {
+    use tokio::stream::StreamExt;
+
     let (tx, mut rx) = watch::channel("one");
 
-    tx.send("two").unwrap();
-    assert_ready!(spawn(rx.changed()).poll()).unwrap();
-    assert_pending!(spawn(rx.changed()).poll());
+    {
+        let mut t = spawn(rx.next());
+        let v = assert_ready!(t.poll()).unwrap();
+        assert_eq!(v, "one");
+    }
 
-    tx.send("three").unwrap();
-    assert_eq!(*rx.borrow_and_update(), "three");
-    assert_pending!(spawn(rx.changed()).poll());
+    {
+        let mut t = spawn(rx.next());
 
-    drop(tx);
-    assert_eq!(*rx.borrow_and_update(), "three");
-    assert_ready!(spawn(rx.changed()).poll()).unwrap_err();
-}
+        assert_pending!(t.poll());
 
-#[test]
-fn reopened_after_subscribe() {
-    let (tx, rx) = watch::channel("one");
-    assert!(!tx.is_closed());
+        tx.broadcast("two").unwrap();
 
-    drop(rx);
-    assert!(tx.is_closed());
+        assert!(t.is_woken());
 
-    let rx = tx.subscribe();
-    assert!(!tx.is_closed());
+        let v = assert_ready!(t.poll()).unwrap();
+        assert_eq!(v, "two");
+    }
 
-    drop(rx);
-    assert!(tx.is_closed());
+    {
+        let mut t = spawn(rx.next());
+
+        assert_pending!(t.poll());
+
+        drop(tx);
+
+        let res = assert_ready!(t.poll());
+        assert!(res.is_none());
+    }
 }

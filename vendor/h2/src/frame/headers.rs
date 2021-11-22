@@ -5,12 +5,12 @@ use crate::hpack::{self, BytesStr};
 use http::header::{self, HeaderName, HeaderValue};
 use http::{uri, HeaderMap, Method, Request, StatusCode, Uri};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 
 use std::fmt;
 use std::io::Cursor;
 
-type EncodeBuf<'a> = bytes::buf::Limit<&'a mut BytesMut>;
+type EncodeBuf<'a> = bytes::buf::ext::Limit<&'a mut BytesMut>;
 
 // Minimum MAX_FRAME_SIZE is 16kb, so save some arbitrary space for frame
 // head and other header bits.
@@ -252,11 +252,6 @@ impl Headers {
     #[cfg(feature = "unstable")]
     pub fn pseudo_mut(&mut self) -> &mut Pseudo {
         &mut self.header_block.pseudo
-    }
-
-    /// Whether it has status 1xx
-    pub(crate) fn is_informational(&self) -> bool {
-        self.header_block.pseudo.is_informational()
     }
 
     pub fn fields(&self) -> &HeaderMap {
@@ -549,22 +544,18 @@ impl Pseudo {
 
         let mut path = parts
             .path_and_query
-            .map(|v| BytesStr::from(v.as_str()))
-            .unwrap_or(BytesStr::from_static(""));
+            .map(|v| Bytes::copy_from_slice(v.as_str().as_bytes()))
+            .unwrap_or_else(Bytes::new);
 
-        match method {
-            Method::OPTIONS | Method::CONNECT => {}
-            _ if path.is_empty() => {
-                path = BytesStr::from_static("/");
-            }
-            _ => {}
+        if path.is_empty() && method != Method::OPTIONS {
+            path = Bytes::from_static(b"/");
         }
 
         let mut pseudo = Pseudo {
             method: Some(method),
             scheme: None,
             authority: None,
-            path: Some(path).filter(|p| !p.is_empty()),
+            path: Some(unsafe { BytesStr::from_utf8_unchecked(path) }),
             status: None,
         };
 
@@ -578,7 +569,9 @@ impl Pseudo {
         // If the URI includes an authority component, add it to the pseudo
         // headers
         if let Some(authority) = parts.authority {
-            pseudo.set_authority(BytesStr::from(authority.as_str()));
+            pseudo.set_authority(unsafe {
+                BytesStr::from_utf8_unchecked(Bytes::copy_from_slice(authority.as_str().as_bytes()))
+            });
         }
 
         pseudo
@@ -595,22 +588,16 @@ impl Pseudo {
     }
 
     pub fn set_scheme(&mut self, scheme: uri::Scheme) {
-        let bytes_str = match scheme.as_str() {
-            "http" => BytesStr::from_static("http"),
-            "https" => BytesStr::from_static("https"),
-            s => BytesStr::from(s),
+        let bytes = match scheme.as_str() {
+            "http" => Bytes::from_static(b"http"),
+            "https" => Bytes::from_static(b"https"),
+            s => Bytes::copy_from_slice(s.as_bytes()),
         };
-        self.scheme = Some(bytes_str);
+        self.scheme = Some(unsafe { BytesStr::from_utf8_unchecked(bytes) });
     }
 
     pub fn set_authority(&mut self, authority: BytesStr) {
         self.authority = Some(authority);
-    }
-
-    /// Whether it has status 1xx
-    pub(crate) fn is_informational(&self) -> bool {
-        self.status
-            .map_or(false, |status| status.is_informational())
     }
 }
 
@@ -838,7 +825,7 @@ impl HeaderBlock {
                 } else {
                     let __val = $val;
                     headers_size +=
-                        decoded_header_size(stringify!($field).len() + 1, __val.as_str().len());
+                        decoded_header_size(stringify!($ident).len() + 1, __val.as_str().len());
                     if headers_size < max_header_list_size {
                         self.pseudo.$field = Some(__val);
                     } else if !self.is_over_size {

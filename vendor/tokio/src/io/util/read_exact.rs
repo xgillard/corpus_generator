@@ -1,9 +1,7 @@
-use crate::io::{AsyncRead, ReadBuf};
+use crate::io::AsyncRead;
 
-use pin_project_lite::pin_project;
 use std::future::Future;
 use std::io;
-use std::marker::PhantomPinned;
 use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -19,12 +17,12 @@ where
 {
     ReadExact {
         reader,
-        buf: ReadBuf::new(buf),
-        _pin: PhantomPinned,
+        buf,
+        pos: 0,
     }
 }
 
-pin_project! {
+cfg_io_util! {
     /// Creates a future which will read exactly enough bytes to fill `buf`,
     /// returning an error if EOF is hit sooner.
     ///
@@ -33,10 +31,8 @@ pin_project! {
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     pub struct ReadExact<'a, A: ?Sized> {
         reader: &'a mut A,
-        buf: ReadBuf<'a>,
-        // Make this future `!Unpin` for compatibility with async trait methods.
-        #[pin]
-        _pin: PhantomPinned,
+        buf: &'a mut [u8],
+        pos: usize,
     }
 }
 
@@ -50,20 +46,32 @@ where
 {
     type Output = io::Result<usize>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
-        let mut me = self.project();
-
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
         loop {
             // if our buffer is empty, then we need to read some data to continue.
-            let rem = me.buf.remaining();
-            if rem != 0 {
-                ready!(Pin::new(&mut *me.reader).poll_read(cx, &mut me.buf))?;
-                if me.buf.remaining() == rem {
+            if self.pos < self.buf.len() {
+                let me = &mut *self;
+                let n = ready!(Pin::new(&mut *me.reader).poll_read(cx, &mut me.buf[me.pos..]))?;
+                me.pos += n;
+                if n == 0 {
                     return Err(eof()).into();
                 }
-            } else {
-                return Poll::Ready(Ok(me.buf.capacity()));
+            }
+
+            if self.pos >= self.buf.len() {
+                return Poll::Ready(Ok(self.pos));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_unpin() {
+        use std::marker::PhantomPinned;
+        crate::is_unpin::<ReadExact<'_, PhantomPinned>>();
     }
 }

@@ -11,9 +11,15 @@ sha2           = "0.9.8"
 rand_xoshiro   = "0.6.0"
 structopt      = "0.3.23"
 rustc-hash     = "1.1.0"
-tokio          = "1.12.0"
 async-trait    = "0.1.51"
 derive_builder = "0.10.2"
 thiserror      = "1.0.29"
 bzip2          = {version = "0.4.3", features = ["tokio"]}
-rocket         = {version = "0.5.0-rc.1", features = ["tls"], git = "https://github.com/SergioBenitez/Rocket", rev="8cae077ba1d54b92cdef3e171a730b819d5eeb8e"}
+actix-web      = {version = "3.3.2", features = ["rustls"]}
+actix-cors     = "0.5.4"
+actix-files    = "0.5.0"
+tokio          = { version = "0.2", features = ["full"]}
+rustls         = "0.18"
+env_logger     = "0.9.0"
+rustls-pemfile = "0.2.1"
+

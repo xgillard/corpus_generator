@@ -4,8 +4,9 @@
 //! To restore this read/write object from its `split::ReadHalf` and
 //! `split::WriteHalf` use `unsplit`.
 
-use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
+use crate::io::{AsyncRead, AsyncWrite};
 
+use bytes::{Buf, BufMut};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::io;
@@ -63,7 +64,7 @@ impl<T> ReadHalf<T> {
     /// Checks if this `ReadHalf` and some `WriteHalf` were split from the same
     /// stream.
     pub fn is_pair_of(&self, other: &WriteHalf<T>) -> bool {
-        other.is_pair_of(self)
+        other.is_pair_of(&self)
     }
 
     /// Reunites with a previously split `WriteHalf`.
@@ -101,10 +102,19 @@ impl<T: AsyncRead> AsyncRead for ReadHalf<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         let mut inner = ready!(self.inner.poll_lock(cx));
         inner.stream_pin().poll_read(cx, buf)
+    }
+
+    fn poll_read_buf<B: BufMut>(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut B,
+    ) -> Poll<io::Result<usize>> {
+        let mut inner = ready!(self.inner.poll_lock(cx));
+        inner.stream_pin().poll_read_buf(cx, buf)
     }
 }
 
@@ -127,15 +137,20 @@ impl<T: AsyncWrite> AsyncWrite for WriteHalf<T> {
         let mut inner = ready!(self.inner.poll_lock(cx));
         inner.stream_pin().poll_shutdown(cx)
     }
+
+    fn poll_write_buf<B: Buf>(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut B,
+    ) -> Poll<Result<usize, io::Error>> {
+        let mut inner = ready!(self.inner.poll_lock(cx));
+        inner.stream_pin().poll_write_buf(cx, buf)
+    }
 }
 
 impl<T> Inner<T> {
     fn poll_lock(&self, cx: &mut Context<'_>) -> Poll<Guard<'_, T>> {
-        if self
-            .locked
-            .compare_exchange(false, true, Acquire, Acquire)
-            .is_ok()
-        {
+        if !self.locked.compare_and_swap(false, true, Acquire) {
             Poll::Ready(Guard { inner: self })
         } else {
             // Spin... but investigate a better strategy

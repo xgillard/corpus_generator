@@ -11,64 +11,13 @@ use crate::{spawn, task};
 use tokio_test::assert_ok;
 
 use loom::sync::atomic::{AtomicBool, AtomicUsize};
-use loom::sync::Arc;
+use loom::sync::{Arc, Mutex};
 
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::task::{Context, Poll};
-
-mod atomic_take {
-    use loom::sync::atomic::AtomicBool;
-    use std::mem::MaybeUninit;
-    use std::sync::atomic::Ordering::SeqCst;
-
-    pub(super) struct AtomicTake<T> {
-        inner: MaybeUninit<T>,
-        taken: AtomicBool,
-    }
-
-    impl<T> AtomicTake<T> {
-        pub(super) fn new(value: T) -> Self {
-            Self {
-                inner: MaybeUninit::new(value),
-                taken: AtomicBool::new(false),
-            }
-        }
-
-        pub(super) fn take(&self) -> Option<T> {
-            // safety: Only one thread will see the boolean change from false
-            // to true, so that thread is able to take the value.
-            match self.taken.fetch_or(true, SeqCst) {
-                false => unsafe { Some(std::ptr::read(self.inner.as_ptr())) },
-                true => None,
-            }
-        }
-    }
-
-    impl<T> Drop for AtomicTake<T> {
-        fn drop(&mut self) {
-            drop(self.take());
-        }
-    }
-}
-
-#[derive(Clone)]
-struct AtomicOneshot<T> {
-    value: std::sync::Arc<atomic_take::AtomicTake<oneshot::Sender<T>>>,
-}
-impl<T> AtomicOneshot<T> {
-    fn new(sender: oneshot::Sender<T>) -> Self {
-        Self {
-            value: std::sync::Arc::new(atomic_take::AtomicTake::new(sender)),
-        }
-    }
-
-    fn assert_send(&self, value: T) {
-        self.value.take().unwrap().send(value);
-    }
-}
 
 /// Tests are divided into groups to make the runs faster on CI.
 mod group_a {
@@ -103,7 +52,7 @@ mod group_a {
             let c1 = Arc::new(AtomicUsize::new(0));
 
             let (tx, rx) = oneshot::channel();
-            let tx1 = AtomicOneshot::new(tx);
+            let tx1 = Arc::new(Mutex::new(Some(tx)));
 
             // Spawn a task
             let c2 = c1.clone();
@@ -111,7 +60,7 @@ mod group_a {
             pool.spawn(track(async move {
                 spawn(track(async move {
                     if 1 == c1.fetch_add(1, Relaxed) {
-                        tx1.assert_send(());
+                        tx1.lock().unwrap().take().unwrap().send(());
                     }
                 }));
             }));
@@ -120,7 +69,7 @@ mod group_a {
             pool.spawn(track(async move {
                 spawn(track(async move {
                     if 1 == c2.fetch_add(1, Relaxed) {
-                        tx2.assert_send(());
+                        tx2.lock().unwrap().take().unwrap().send(());
                     }
                 }));
             }));
@@ -170,7 +119,7 @@ mod group_b {
 
             let (block_tx, block_rx) = oneshot::channel();
             let (done_tx, done_rx) = oneshot::channel();
-            let done_tx = AtomicOneshot::new(done_tx);
+            let done_tx = Arc::new(Mutex::new(Some(done_tx)));
 
             pool.spawn(track(async move {
                 crate::task::block_in_place(move || {
@@ -187,7 +136,7 @@ mod group_b {
 
                 pool.spawn(track(async move {
                     if NUM == cnt.fetch_add(1, Relaxed) + 1 {
-                        done_tx.assert_send(());
+                        done_tx.lock().unwrap().take().unwrap().send(());
                     }
                 }));
             }
@@ -210,9 +159,26 @@ mod group_b {
     }
 
     #[test]
+    fn pool_shutdown() {
+        loom::model(|| {
+            let pool = mk_pool(2);
+
+            pool.spawn(track(async move {
+                gated2(true).await;
+            }));
+
+            pool.spawn(track(async move {
+                gated2(false).await;
+            }));
+
+            drop(pool);
+        });
+    }
+
+    #[test]
     fn join_output() {
         loom::model(|| {
-            let rt = mk_pool(1);
+            let mut rt = mk_pool(1);
 
             rt.block_on(async {
                 let t = crate::spawn(track(async { "hello" }));
@@ -226,7 +192,7 @@ mod group_b {
     #[test]
     fn poll_drop_handle_then_drop() {
         loom::model(|| {
-            let rt = mk_pool(1);
+            let mut rt = mk_pool(1);
 
             rt.block_on(async move {
                 let mut t = crate::spawn(track(async { "hello" }));
@@ -243,7 +209,7 @@ mod group_b {
     #[test]
     fn complete_block_on_under_load() {
         loom::model(|| {
-            let pool = mk_pool(1);
+            let mut pool = mk_pool(1);
 
             pool.block_on(async {
                 // Trigger a re-schedule
@@ -257,6 +223,10 @@ mod group_b {
             });
         });
     }
+}
+
+mod group_c {
+    use super::*;
 
     #[test]
     fn shutdown_with_notification() {
@@ -285,27 +255,6 @@ mod group_b {
     }
 }
 
-mod group_c {
-    use super::*;
-
-    #[test]
-    fn pool_shutdown() {
-        loom::model(|| {
-            let pool = mk_pool(2);
-
-            pool.spawn(track(async move {
-                gated2(true).await;
-            }));
-
-            pool.spawn(track(async move {
-                gated2(false).await;
-            }));
-
-            drop(pool);
-        });
-    }
-}
-
 mod group_d {
     use super::*;
 
@@ -317,17 +266,17 @@ mod group_d {
             let c1 = Arc::new(AtomicUsize::new(0));
 
             let (done_tx, done_rx) = oneshot::channel();
-            let done_tx1 = AtomicOneshot::new(done_tx);
-            let done_tx2 = done_tx1.clone();
+            let done_tx1 = Arc::new(Mutex::new(Some(done_tx)));
 
             // Spawn a task
             let c2 = c1.clone();
+            let done_tx2 = done_tx1.clone();
             pool.spawn(track(async move {
                 gated().await;
                 gated().await;
 
                 if 1 == c1.fetch_add(1, Relaxed) {
-                    done_tx1.assert_send(());
+                    done_tx1.lock().unwrap().take().unwrap().send(());
                 }
             }));
 
@@ -337,7 +286,7 @@ mod group_d {
                 gated().await;
 
                 if 1 == c2.fetch_add(1, Relaxed) {
-                    done_tx2.assert_send(());
+                    done_tx2.lock().unwrap().take().unwrap().send(());
                 }
             }));
 
@@ -347,8 +296,9 @@ mod group_d {
 }
 
 fn mk_pool(num_threads: usize) -> Runtime {
-    runtime::Builder::new_multi_thread()
-        .worker_threads(num_threads)
+    runtime::Builder::new()
+        .threaded_scheduler()
+        .core_threads(num_threads)
         .build()
         .unwrap()
 }

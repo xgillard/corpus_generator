@@ -24,7 +24,7 @@ fn multi_loop() {
             .map(|_| {
                 let sender = sender.clone();
                 thread::spawn(move || {
-                    let rt = rt();
+                    let mut rt = rt();
                     let _ = rt.block_on(async {
                         let mut signal = signal(SignalKind::hangup()).unwrap();
                         sender.send(()).unwrap();
@@ -47,7 +47,8 @@ fn multi_loop() {
 }
 
 fn rt() -> Runtime {
-    tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new()
+        .basic_scheduler()
         .enable_all()
         .build()
         .unwrap()

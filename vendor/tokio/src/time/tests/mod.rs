@@ -1,4 +1,4 @@
-mod test_sleep;
+mod test_delay;
 
 use crate::time::{self, Instant};
 use std::time::Duration;
@@ -8,15 +8,15 @@ fn assert_sync<T: Sync>() {}
 
 #[test]
 fn registration_is_send_and_sync() {
-    use crate::time::Sleep;
+    use crate::time::driver::Registration;
 
-    assert_send::<Sleep>();
-    assert_sync::<Sleep>();
+    assert_send::<Registration>();
+    assert_sync::<Registration>();
 }
 
 #[test]
 #[should_panic]
-fn sleep_is_eager() {
+fn delay_is_eager() {
     let when = Instant::now() + Duration::from_millis(100);
-    let _ = time::sleep_until(when);
+    let _ = time::delay_until(when);
 }

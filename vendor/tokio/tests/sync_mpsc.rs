@@ -2,8 +2,6 @@
 #![warn(rust_2018_idioms)]
 #![cfg(feature = "full")]
 
-use std::thread;
-use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio_test::task;
@@ -13,81 +11,78 @@ use tokio_test::{
 
 use std::sync::Arc;
 
-mod support {
-    pub(crate) mod mpsc_stream;
-}
-
 trait AssertSend: Send {}
 impl AssertSend for mpsc::Sender<i32> {}
 impl AssertSend for mpsc::Receiver<i32> {}
 
-#[tokio::test]
-async fn send_recv_with_buffer() {
-    let (tx, mut rx) = mpsc::channel::<i32>(16);
+#[test]
+fn send_recv_with_buffer() {
+    let (tx, rx) = mpsc::channel::<i32>(16);
+    let mut tx = task::spawn(tx);
+    let mut rx = task::spawn(rx);
 
     // Using poll_ready / try_send
-    // let permit assert_ready_ok!(tx.reserve());
-    let permit = tx.reserve().await.unwrap();
-    permit.send(1);
+    assert_ready_ok!(tx.enter(|cx, mut tx| tx.poll_ready(cx)));
+    tx.try_send(1).unwrap();
 
     // Without poll_ready
     tx.try_send(2).unwrap();
 
     drop(tx);
 
-    let val = rx.recv().await;
+    let val = assert_ready!(rx.enter(|cx, mut rx| rx.poll_recv(cx)));
     assert_eq!(val, Some(1));
 
-    let val = rx.recv().await;
+    let val = assert_ready!(rx.enter(|cx, mut rx| rx.poll_recv(cx)));
     assert_eq!(val, Some(2));
 
-    let val = rx.recv().await;
+    let val = assert_ready!(rx.enter(|cx, mut rx| rx.poll_recv(cx)));
     assert!(val.is_none());
 }
 
-#[tokio::test]
-async fn reserve_disarm() {
-    let (tx, mut rx) = mpsc::channel::<i32>(2);
-    let tx1 = tx.clone();
-    let tx2 = tx.clone();
-    let tx3 = tx.clone();
-    let tx4 = tx;
+#[test]
+fn disarm() {
+    let (tx, rx) = mpsc::channel::<i32>(2);
+    let mut tx1 = task::spawn(tx.clone());
+    let mut tx2 = task::spawn(tx.clone());
+    let mut tx3 = task::spawn(tx.clone());
+    let mut tx4 = task::spawn(tx);
+    let mut rx = task::spawn(rx);
 
     // We should be able to `poll_ready` two handles without problem
-    let permit1 = assert_ok!(tx1.reserve().await);
-    let permit2 = assert_ok!(tx2.reserve().await);
+    assert_ready_ok!(tx1.enter(|cx, mut tx| tx.poll_ready(cx)));
+    assert_ready_ok!(tx2.enter(|cx, mut tx| tx.poll_ready(cx)));
 
     // But a third should not be ready
-    let mut r3 = task::spawn(tx3.reserve());
-    assert_pending!(r3.poll());
-
-    let mut r4 = task::spawn(tx4.reserve());
-    assert_pending!(r4.poll());
+    assert_pending!(tx3.enter(|cx, mut tx| tx.poll_ready(cx)));
 
     // Using one of the reserved slots should allow a new handle to become ready
-    permit1.send(1);
-
+    tx1.try_send(1).unwrap();
     // We also need to receive for the slot to be free
-    assert!(!r3.is_woken());
-    rx.recv().await.unwrap();
+    let _ = assert_ready!(rx.enter(|cx, mut rx| rx.poll_recv(cx))).unwrap();
     // Now there's a free slot!
-    assert!(r3.is_woken());
-    assert!(!r4.is_woken());
+    assert_ready_ok!(tx3.enter(|cx, mut tx| tx.poll_ready(cx)));
+    assert_pending!(tx4.enter(|cx, mut tx| tx.poll_ready(cx)));
 
-    // Dropping a permit should also open up a slot
-    drop(permit2);
-    assert!(r4.is_woken());
+    // Dropping a ready handle should also open up a slot
+    drop(tx2);
+    assert_ready_ok!(tx4.enter(|cx, mut tx| tx.poll_ready(cx)));
+    assert_pending!(tx1.enter(|cx, mut tx| tx.poll_ready(cx)));
 
-    let mut r1 = task::spawn(tx1.reserve());
-    assert_pending!(r1.poll());
+    // Explicitly disarming a handle should also open a slot
+    assert!(tx3.disarm());
+    assert_ready_ok!(tx1.enter(|cx, mut tx| tx.poll_ready(cx)));
+
+    // Disarming a non-armed sender does not free up a slot
+    assert!(!tx3.disarm());
+    assert_pending!(tx3.enter(|cx, mut tx| tx.poll_ready(cx)));
 }
 
 #[tokio::test]
 async fn send_recv_stream_with_buffer() {
-    use tokio_stream::StreamExt;
+    use tokio::stream::StreamExt;
 
-    let (tx, rx) = support::mpsc_stream::channel_stream::<i32>(16);
-    let mut rx = Box::pin(rx);
+    let (mut tx, mut rx) = mpsc::channel::<i32>(16);
 
     tokio::spawn(async move {
         assert_ok!(tx.send(1).await);
@@ -101,7 +96,7 @@ async fn send_recv_stream_with_buffer() {
 
 #[tokio::test]
 async fn async_send_recv_with_buffer() {
-    let (tx, mut rx) = mpsc::channel(16);
+    let (mut tx, mut rx) = mpsc::channel(16);
 
     tokio::spawn(async move {
         assert_ok!(tx.send(1).await);
@@ -113,36 +108,37 @@ async fn async_send_recv_with_buffer() {
     assert_eq!(None, rx.recv().await);
 }
 
-#[tokio::test]
-async fn start_send_past_cap() {
-    use std::future::Future;
-
+#[test]
+fn start_send_past_cap() {
     let mut t1 = task::spawn(());
+    let mut t2 = task::spawn(());
+    let mut t3 = task::spawn(());
 
-    let (tx1, mut rx) = mpsc::channel(1);
-    let tx2 = tx1.clone();
+    let (mut tx1, mut rx) = mpsc::channel(1);
+    let mut tx2 = tx1.clone();
 
     assert_ok!(tx1.try_send(()));
 
-    let mut r1 = Box::pin(tx1.reserve());
-    t1.enter(|cx, _| assert_pending!(r1.as_mut().poll(cx)));
+    t1.enter(|cx, _| {
+        assert_pending!(tx1.poll_ready(cx));
+    });
 
-    {
-        let mut r2 = task::spawn(tx2.reserve());
-        assert_pending!(r2.poll());
-
-        drop(r1);
-
-        assert!(rx.recv().await.is_some());
-
-        assert!(r2.is_woken());
-        assert!(!t1.is_woken());
-    }
+    t2.enter(|cx, _| {
+        assert_pending!(tx2.poll_ready(cx));
+    });
 
     drop(tx1);
+
+    let val = t3.enter(|cx, _| assert_ready!(rx.poll_recv(cx)));
+    assert!(val.is_some());
+
+    assert!(t2.is_woken());
+    assert!(!t1.is_woken());
+
     drop(tx2);
 
-    assert!(rx.recv().await.is_none());
+    let val = t3.enter(|cx, _| assert_ready!(rx.poll_recv(cx)));
+    assert!(val.is_none());
 }
 
 #[test]
@@ -151,20 +147,26 @@ fn buffer_gteq_one() {
     mpsc::channel::<i32>(0);
 }
 
-#[tokio::test]
-async fn send_recv_unbounded() {
+#[test]
+fn send_recv_unbounded() {
+    let mut t1 = task::spawn(());
+
     let (tx, mut rx) = mpsc::unbounded_channel::<i32>();
 
     // Using `try_send`
     assert_ok!(tx.send(1));
     assert_ok!(tx.send(2));
 
-    assert_eq!(rx.recv().await, Some(1));
-    assert_eq!(rx.recv().await, Some(2));
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert_eq!(val, Some(1));
+
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert_eq!(val, Some(2));
 
     drop(tx);
 
-    assert!(rx.recv().await.is_none());
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert!(val.is_none());
 }
 
 #[tokio::test]
@@ -183,11 +185,9 @@ async fn async_send_recv_unbounded() {
 
 #[tokio::test]
 async fn send_recv_stream_unbounded() {
-    use tokio_stream::StreamExt;
+    use tokio::stream::StreamExt;
 
-    let (tx, rx) = support::mpsc_stream::unbounded_channel_stream::<i32>();
-
-    let mut rx = Box::pin(rx);
+    let (tx, mut rx) = mpsc::unbounded_channel::<i32>();
 
     tokio::spawn(async move {
         assert_ok!(tx.send(1));
@@ -199,10 +199,11 @@ async fn send_recv_stream_unbounded() {
     assert_eq!(None, rx.next().await);
 }
 
-#[tokio::test]
-async fn no_t_bounds_buffer() {
+#[test]
+fn no_t_bounds_buffer() {
     struct NoImpls;
 
+    let mut t1 = task::spawn(());
     let (tx, mut rx) = mpsc::channel(100);
 
     // sender should be Debug even though T isn't Debug
@@ -212,13 +213,15 @@ async fn no_t_bounds_buffer() {
     // and sender should be Clone even though T isn't Clone
     assert!(tx.clone().try_send(NoImpls).is_ok());
 
-    assert!(rx.recv().await.is_some());
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert!(val.is_some());
 }
 
-#[tokio::test]
-async fn no_t_bounds_unbounded() {
+#[test]
+fn no_t_bounds_unbounded() {
     struct NoImpls;
 
+    let mut t1 = task::spawn(());
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     // sender should be Debug even though T isn't Debug
@@ -228,87 +231,133 @@ async fn no_t_bounds_unbounded() {
     // and sender should be Clone even though T isn't Clone
     assert!(tx.clone().send(NoImpls).is_ok());
 
-    assert!(rx.recv().await.is_some());
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert!(val.is_some());
 }
 
-#[tokio::test]
-async fn send_recv_buffer_limited() {
-    let (tx, mut rx) = mpsc::channel::<i32>(1);
+#[test]
+fn send_recv_buffer_limited() {
+    let mut t1 = task::spawn(());
+    let mut t2 = task::spawn(());
 
-    // Reserve capacity
-    let p1 = assert_ok!(tx.reserve().await);
+    let (mut tx, mut rx) = mpsc::channel::<i32>(1);
 
-    // Send first message
-    p1.send(1);
+    // Run on a task context
+    t1.enter(|cx, _| {
+        assert_ready_ok!(tx.poll_ready(cx));
 
-    // Not ready
-    let mut p2 = task::spawn(tx.reserve());
-    assert_pending!(p2.poll());
+        // Send first message
+        assert_ok!(tx.try_send(1));
 
-    // Take the value
-    assert!(rx.recv().await.is_some());
+        // Not ready
+        assert_pending!(tx.poll_ready(cx));
 
-    // Notified
-    assert!(p2.is_woken());
+        // Send second message
+        assert_err!(tx.try_send(1337));
+    });
 
-    // Trying to send fails
-    assert_err!(tx.try_send(1337));
+    t2.enter(|cx, _| {
+        // Take the value
+        let val = assert_ready!(rx.poll_recv(cx));
+        assert_eq!(Some(1), val);
+    });
 
-    // Send second
-    let permit = assert_ready_ok!(p2.poll());
-    permit.send(2);
+    assert!(t1.is_woken());
 
-    assert!(rx.recv().await.is_some());
+    t1.enter(|cx, _| {
+        assert_ready_ok!(tx.poll_ready(cx));
+
+        assert_ok!(tx.try_send(2));
+
+        // Not ready
+        assert_pending!(tx.poll_ready(cx));
+    });
+
+    t2.enter(|cx, _| {
+        // Take the value
+        let val = assert_ready!(rx.poll_recv(cx));
+        assert_eq!(Some(2), val);
+    });
+
+    t1.enter(|cx, _| {
+        assert_ready_ok!(tx.poll_ready(cx));
+    });
 }
 
-#[tokio::test]
-async fn recv_close_gets_none_idle() {
-    let (tx, mut rx) = mpsc::channel::<i32>(10);
+#[test]
+fn recv_close_gets_none_idle() {
+    let mut t1 = task::spawn(());
+
+    let (mut tx, mut rx) = mpsc::channel::<i32>(10);
 
     rx.close();
 
-    assert!(rx.recv().await.is_none());
-
-    assert_err!(tx.send(1).await);
+    t1.enter(|cx, _| {
+        let val = assert_ready!(rx.poll_recv(cx));
+        assert!(val.is_none());
+        assert_ready_err!(tx.poll_ready(cx));
+    });
 }
 
-#[tokio::test]
-async fn recv_close_gets_none_reserved() {
-    let (tx1, mut rx) = mpsc::channel::<i32>(1);
-    let tx2 = tx1.clone();
+#[test]
+fn recv_close_gets_none_reserved() {
+    let mut t1 = task::spawn(());
+    let mut t2 = task::spawn(());
+    let mut t3 = task::spawn(());
 
-    let permit1 = assert_ok!(tx1.reserve().await);
-    let mut permit2 = task::spawn(tx2.reserve());
-    assert_pending!(permit2.poll());
+    let (mut tx1, mut rx) = mpsc::channel::<i32>(1);
+    let mut tx2 = tx1.clone();
+
+    assert_ready_ok!(t1.enter(|cx, _| tx1.poll_ready(cx)));
+
+    t2.enter(|cx, _| {
+        assert_pending!(tx2.poll_ready(cx));
+    });
 
     rx.close();
 
-    assert!(permit2.is_woken());
-    assert_ready_err!(permit2.poll());
+    assert!(t2.is_woken());
 
-    {
-        let mut recv = task::spawn(rx.recv());
-        assert_pending!(recv.poll());
+    t2.enter(|cx, _| {
+        assert_ready_err!(tx2.poll_ready(cx));
+    });
 
-        permit1.send(123);
-        assert!(recv.is_woken());
+    t3.enter(|cx, _| assert_pending!(rx.poll_recv(cx)));
 
-        let v = assert_ready!(recv.poll());
+    assert!(!t1.is_woken());
+    assert!(!t2.is_woken());
+
+    assert_ok!(tx1.try_send(123));
+
+    assert!(t3.is_woken());
+
+    t3.enter(|cx, _| {
+        let v = assert_ready!(rx.poll_recv(cx));
         assert_eq!(v, Some(123));
-    }
 
-    assert!(rx.recv().await.is_none());
+        let v = assert_ready!(rx.poll_recv(cx));
+        assert!(v.is_none());
+    });
 }
 
-#[tokio::test]
-async fn tx_close_gets_none() {
+#[test]
+fn tx_close_gets_none() {
+    let mut t1 = task::spawn(());
+
     let (_, mut rx) = mpsc::channel::<i32>(10);
-    assert!(rx.recv().await.is_none());
+
+    // Run on a task context
+    t1.enter(|cx, _| {
+        let v = assert_ready!(rx.poll_recv(cx));
+        assert!(v.is_none());
+    });
 }
 
-#[tokio::test]
-async fn try_send_fail() {
-    let (tx, mut rx) = mpsc::channel(1);
+#[test]
+fn try_send_fail() {
+    let mut t1 = task::spawn(());
+
+    let (mut tx, mut rx) = mpsc::channel(1);
 
     tx.try_send("hello").unwrap();
 
@@ -318,107 +367,73 @@ async fn try_send_fail() {
         _ => panic!(),
     }
 
-    assert_eq!(rx.recv().await, Some("hello"));
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert_eq!(val, Some("hello"));
 
     assert_ok!(tx.try_send("goodbye"));
     drop(tx);
 
-    assert_eq!(rx.recv().await, Some("goodbye"));
-    assert!(rx.recv().await.is_none());
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert_eq!(val, Some("goodbye"));
+
+    let val = assert_ready!(t1.enter(|cx, _| rx.poll_recv(cx)));
+    assert!(val.is_none());
 }
 
-#[tokio::test]
-async fn try_send_fail_with_try_recv() {
-    let (tx, mut rx) = mpsc::channel(1);
+#[test]
+fn drop_tx_with_permit_releases_permit() {
+    let mut t1 = task::spawn(());
+    let mut t2 = task::spawn(());
 
-    tx.try_send("hello").unwrap();
-
-    // This should fail
-    match assert_err!(tx.try_send("fail")) {
-        TrySendError::Full(..) => {}
-        _ => panic!(),
-    }
-
-    assert_eq!(rx.try_recv(), Ok("hello"));
-
-    assert_ok!(tx.try_send("goodbye"));
-    drop(tx);
-
-    assert_eq!(rx.try_recv(), Ok("goodbye"));
-    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
-}
-
-#[tokio::test]
-async fn try_reserve_fails() {
-    let (tx, mut rx) = mpsc::channel(1);
-
-    let permit = tx.try_reserve().unwrap();
-
-    // This should fail
-    match assert_err!(tx.try_reserve()) {
-        TrySendError::Full(()) => {}
-        _ => panic!(),
-    }
-
-    permit.send("foo");
-
-    assert_eq!(rx.recv().await, Some("foo"));
-
-    // Dropping permit releases the slot.
-    let permit = tx.try_reserve().unwrap();
-    drop(permit);
-
-    let _permit = tx.try_reserve().unwrap();
-}
-
-#[tokio::test]
-async fn drop_permit_releases_permit() {
     // poll_ready reserves capacity, ensure that the capacity is released if tx
     // is dropped w/o sending a value.
-    let (tx1, _rx) = mpsc::channel::<i32>(1);
-    let tx2 = tx1.clone();
+    let (mut tx1, _rx) = mpsc::channel::<i32>(1);
+    let mut tx2 = tx1.clone();
 
-    let permit = assert_ok!(tx1.reserve().await);
+    assert_ready_ok!(t1.enter(|cx, _| tx1.poll_ready(cx)));
 
-    let mut reserve2 = task::spawn(tx2.reserve());
-    assert_pending!(reserve2.poll());
+    t2.enter(|cx, _| {
+        assert_pending!(tx2.poll_ready(cx));
+    });
 
-    drop(permit);
+    drop(tx1);
 
-    assert!(reserve2.is_woken());
-    assert_ready_ok!(reserve2.poll());
+    assert!(t2.is_woken());
+
+    assert_ready_ok!(t2.enter(|cx, _| tx2.poll_ready(cx)));
 }
 
-#[tokio::test]
-async fn dropping_rx_closes_channel() {
-    let (tx, rx) = mpsc::channel(100);
+#[test]
+fn dropping_rx_closes_channel() {
+    let mut t1 = task::spawn(());
+
+    let (mut tx, rx) = mpsc::channel(100);
 
     let msg = Arc::new(());
     assert_ok!(tx.try_send(msg.clone()));
 
     drop(rx);
-    assert_err!(tx.reserve().await);
+    assert_ready_err!(t1.enter(|cx, _| tx.poll_ready(cx)));
+
     assert_eq!(1, Arc::strong_count(&msg));
 }
 
 #[test]
 fn dropping_rx_closes_channel_for_try() {
-    let (tx, rx) = mpsc::channel(100);
+    let (mut tx, rx) = mpsc::channel(100);
 
     let msg = Arc::new(());
     tx.try_send(msg.clone()).unwrap();
 
     drop(rx);
 
-    assert!(matches!(
-        tx.try_send(msg.clone()),
-        Err(TrySendError::Closed(_))
-    ));
-    assert!(matches!(tx.try_reserve(), Err(TrySendError::Closed(_))));
-    assert!(matches!(
-        tx.try_reserve_owned(),
-        Err(TrySendError::Closed(_))
-    ));
+    {
+        let err = assert_err!(tx.try_send(msg.clone()));
+        match err {
+            TrySendError::Closed(..) => {}
+            _ => panic!(),
+        }
+    }
 
     assert_eq!(1, Arc::strong_count(&msg));
 }
@@ -427,7 +442,7 @@ fn dropping_rx_closes_channel_for_try() {
 fn unconsumed_messages_are_dropped() {
     let msg = Arc::new(());
 
-    let (tx, rx) = mpsc::channel(100);
+    let (mut tx, rx) = mpsc::channel(100);
 
     tx.try_send(msg.clone()).unwrap();
 
@@ -439,161 +454,85 @@ fn unconsumed_messages_are_dropped() {
 }
 
 #[test]
-fn blocking_recv() {
-    let (tx, mut rx) = mpsc::channel::<u8>(1);
-
-    let sync_code = thread::spawn(move || {
-        assert_eq!(Some(10), rx.blocking_recv());
-    });
-
-    Runtime::new().unwrap().block_on(async move {
-        let _ = tx.send(10).await;
-    });
-    sync_code.join().unwrap()
-}
-
-#[tokio::test]
-#[should_panic]
-async fn blocking_recv_async() {
-    let (_tx, mut rx) = mpsc::channel::<()>(1);
-    let _ = rx.blocking_recv();
-}
-
-#[test]
-fn blocking_send() {
-    let (tx, mut rx) = mpsc::channel::<u8>(1);
-
-    let sync_code = thread::spawn(move || {
-        tx.blocking_send(10).unwrap();
-    });
-
-    Runtime::new().unwrap().block_on(async move {
-        assert_eq!(Some(10), rx.recv().await);
-    });
-    sync_code.join().unwrap()
-}
-
-#[tokio::test]
-#[should_panic]
-async fn blocking_send_async() {
-    let (tx, _rx) = mpsc::channel::<()>(1);
-    let _ = tx.blocking_send(());
-}
-
-#[tokio::test]
-async fn ready_close_cancel_bounded() {
-    let (tx, mut rx) = mpsc::channel::<()>(100);
-    let _tx2 = tx.clone();
-
-    let permit = assert_ok!(tx.reserve().await);
-
-    rx.close();
-
-    let mut recv = task::spawn(rx.recv());
-    assert_pending!(recv.poll());
-
-    drop(permit);
-
-    assert!(recv.is_woken());
-    let val = assert_ready!(recv.poll());
-    assert!(val.is_none());
-}
-
-#[tokio::test]
-async fn permit_available_not_acquired_close() {
-    let (tx1, mut rx) = mpsc::channel::<()>(1);
-    let tx2 = tx1.clone();
-
-    let permit1 = assert_ok!(tx1.reserve().await);
-
-    let mut permit2 = task::spawn(tx2.reserve());
-    assert_pending!(permit2.poll());
-
-    rx.close();
-
-    drop(permit1);
-    assert!(permit2.is_woken());
-
-    drop(permit2);
-    assert!(rx.recv().await.is_none());
-}
-
-#[test]
-fn try_recv_bounded() {
-    let (tx, mut rx) = mpsc::channel(5);
-
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    assert!(tx.try_send("hello").is_err());
-
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
-
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    assert_eq!(Ok("hello"), rx.try_recv());
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    assert!(tx.try_send("hello").is_err());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
-
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
-    tx.try_send("hello").unwrap();
+fn try_recv() {
+    let (mut tx, mut rx) = mpsc::channel(1);
+    match rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        _ => panic!(),
+    }
+    tx.try_send(42).unwrap();
+    match rx.try_recv() {
+        Ok(42) => {}
+        _ => panic!(),
+    }
     drop(tx);
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Ok("hello"), rx.try_recv());
-    assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
-}
-
-#[test]
-fn try_recv_unbounded() {
-    for num in 0..100 {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        for i in 0..num {
-            tx.send(i).unwrap();
-        }
-
-        for i in 0..num {
-            assert_eq!(rx.try_recv(), Ok(i));
-        }
-
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
-        drop(tx);
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+    match rx.try_recv() {
+        Err(TryRecvError::Closed) => {}
+        _ => panic!(),
     }
 }
 
 #[test]
-fn try_recv_close_while_empty_bounded() {
-    let (tx, mut rx) = mpsc::channel::<()>(5);
-
-    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
+fn try_recv_unbounded() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    match rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        _ => panic!(),
+    }
+    tx.send(42).unwrap();
+    match rx.try_recv() {
+        Ok(42) => {}
+        _ => panic!(),
+    }
     drop(tx);
-    assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
+    match rx.try_recv() {
+        Err(TryRecvError::Closed) => {}
+        _ => panic!(),
+    }
 }
 
 #[test]
-fn try_recv_close_while_empty_unbounded() {
-    let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+fn ready_close_cancel_bounded() {
+    use futures::future::poll_fn;
 
-    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
+    let (mut tx, mut rx) = mpsc::channel::<()>(100);
+    let _tx2 = tx.clone();
+
+    {
+        let mut ready = task::spawn(async { poll_fn(|cx| tx.poll_ready(cx)).await });
+        assert_ready_ok!(ready.poll());
+    }
+
+    rx.close();
+
+    let mut recv = task::spawn(async { rx.recv().await });
+    assert_pending!(recv.poll());
+
     drop(tx);
-    assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
+
+    assert!(recv.is_woken());
+}
+
+#[tokio::test]
+async fn permit_available_not_acquired_close() {
+    use futures::future::poll_fn;
+
+    let (mut tx1, mut rx) = mpsc::channel::<()>(1);
+    let mut tx2 = tx1.clone();
+
+    {
+        let mut ready = task::spawn(poll_fn(|cx| tx1.poll_ready(cx)));
+        assert_ready_ok!(ready.poll());
+    }
+
+    let mut ready = task::spawn(poll_fn(|cx| tx2.poll_ready(cx)));
+    assert_pending!(ready.poll());
+
+    rx.close();
+
+    drop(tx1);
+    assert!(ready.is_woken());
+
+    drop(tx2);
+    assert!(rx.recv().await.is_none());
 }

@@ -18,17 +18,12 @@ async fn simple() {
 
     let mut child = cmd.arg("exit 2").spawn().unwrap();
 
-    let id = child.id().expect("missing id");
+    let id = child.id();
     assert!(id > 0);
 
-    let status = assert_ok!(child.wait().await);
+    let status = assert_ok!((&mut child).await);
     assert_eq!(status.code(), Some(2));
 
-    // test that the `.wait()` method is fused just like the stdlib
-    let status = assert_ok!(child.wait().await);
-    assert_eq!(status.code(), Some(2));
-
-    // Can't get id after process has exited
-    assert_eq!(child.id(), None);
+    assert_eq!(child.id(), id);
     drop(child.kill());
 }

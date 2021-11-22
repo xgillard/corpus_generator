@@ -4,9 +4,10 @@
 //!
 //! [`Timeout`]: struct@Timeout
 
-use crate::time::{error::Elapsed, sleep_until, Duration, Instant, Sleep};
+use crate::time::{delay_until, Delay, Duration, Instant};
 
 use pin_project_lite::pin_project;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{self, Poll};
@@ -49,11 +50,7 @@ pub fn timeout<T>(duration: Duration, future: T) -> Timeout<T>
 where
     T: Future,
 {
-    let deadline = Instant::now().checked_add(duration);
-    let delay = match deadline {
-        Some(deadline) => Sleep::new_timeout(deadline),
-        None => Sleep::far_future(),
-    };
+    let delay = Delay::new_timeout(Instant::now() + duration, duration);
     Timeout::new_with_delay(future, delay)
 }
 
@@ -95,7 +92,7 @@ pub fn timeout_at<T>(deadline: Instant, future: T) -> Timeout<T>
 where
     T: Future,
 {
-    let delay = sleep_until(deadline);
+    let delay = delay_until(deadline);
 
     Timeout {
         value: future,
@@ -111,12 +108,24 @@ pin_project! {
         #[pin]
         value: T,
         #[pin]
-        delay: Sleep,
+        delay: Delay,
+    }
+}
+
+/// Error returned by `Timeout`.
+#[derive(Debug, PartialEq)]
+pub struct Elapsed(());
+
+impl Elapsed {
+    // Used on StreamExt::timeout
+    #[allow(unused)]
+    pub(crate) fn new() -> Self {
+        Elapsed(())
     }
 }
 
 impl<T> Timeout<T> {
-    pub(crate) fn new_with_delay(value: T, delay: Sleep) -> Timeout<T> {
+    pub(crate) fn new_with_delay(value: T, delay: Delay) -> Timeout<T> {
         Timeout { value, delay }
     }
 
@@ -152,8 +161,24 @@ where
 
         // Now check the timer
         match me.delay.poll(cx) {
-            Poll::Ready(()) => Poll::Ready(Err(Elapsed::new())),
+            Poll::Ready(()) => Poll::Ready(Err(Elapsed(()))),
             Poll::Pending => Poll::Pending,
         }
+    }
+}
+
+// ===== impl Elapsed =====
+
+impl fmt::Display for Elapsed {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        "deadline has elapsed".fmt(fmt)
+    }
+}
+
+impl std::error::Error for Elapsed {}
+
+impl From<Elapsed> for std::io::Error {
+    fn from(_err: Elapsed) -> std::io::Error {
+        std::io::ErrorKind::TimedOut.into()
     }
 }

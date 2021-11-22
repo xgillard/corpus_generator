@@ -24,6 +24,7 @@ thinkg of right now:
 1. You will need to have the rust toolchain installed on your machine
 2. You will need to compile the code before being able to actually run it
 
+(Note: the following steps have been automated in a script which is called `server.sh`)
 Once your edits are done and you have uploaded the source on this VM you will want to:
 1. Shut the machine down (`ps alx | grep corpus` and then kill the process you found)
 2. Copy the compiled artifact in `/root/bin` (`cp target/release/corpus_generator /root/bin`)

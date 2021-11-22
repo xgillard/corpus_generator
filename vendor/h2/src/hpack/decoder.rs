@@ -311,7 +311,7 @@ impl Decoder {
 
         if huff {
             let ret = {
-                let raw = &buf.chunk()[..len];
+                let raw = &buf.bytes()[..len];
                 huffman::decode(raw, &mut self.buffer).map(BytesMut::freeze)
             };
 
@@ -419,7 +419,7 @@ fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderErro
 
 fn peek_u8<B: Buf>(buf: &mut B) -> Option<u8> {
     if buf.has_remaining() {
-        Some(buf.chunk()[0])
+        Some(buf.bytes()[0])
     } else {
         None
     }
@@ -577,13 +577,13 @@ pub fn get_static(idx: usize) -> Header {
     use http::header::HeaderValue;
 
     match idx {
-        1 => Header::Authority(BytesStr::from_static("")),
+        1 => Header::Authority(from_static("")),
         2 => Header::Method(Method::GET),
         3 => Header::Method(Method::POST),
-        4 => Header::Path(BytesStr::from_static("/")),
-        5 => Header::Path(BytesStr::from_static("/index.html")),
-        6 => Header::Scheme(BytesStr::from_static("http")),
-        7 => Header::Scheme(BytesStr::from_static("https")),
+        4 => Header::Path(from_static("/")),
+        5 => Header::Path(from_static("/index.html")),
+        6 => Header::Scheme(from_static("http")),
+        7 => Header::Scheme(from_static("https")),
         8 => Header::Status(StatusCode::OK),
         9 => Header::Status(StatusCode::NO_CONTENT),
         10 => Header::Status(StatusCode::PARTIAL_CONTENT),
@@ -781,6 +781,10 @@ pub fn get_static(idx: usize) -> Header {
         },
         _ => unreachable!(),
     }
+}
+
+fn from_static(s: &'static str) -> BytesStr {
+    unsafe { BytesStr::from_utf8_unchecked(Bytes::from_static(s.as_bytes())) }
 }
 
 #[cfg(test)]

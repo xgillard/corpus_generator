@@ -1,18 +1,15 @@
-use crate::error::TLSError;
-use crate::key;
 use crate::msgs::enums::{SignatureAlgorithm, SignatureScheme};
+use crate::key;
+use crate::error::TLSError;
 
-use ring::{
-    self,
-    signature::{self, EcdsaKeyPair, Ed25519KeyPair, RsaKeyPair},
-};
+use ring::{self, signature::{self, EcdsaKeyPair, Ed25519KeyPair, RsaKeyPair}};
 use webpki;
 
-use std::mem;
 use std::sync::Arc;
+use std::mem;
 
 /// An abstract signing key.
-pub trait SigningKey: Send + Sync {
+pub trait SigningKey : Send + Sync {
     /// Choose a `SignatureScheme` from those offered.
     ///
     /// Expresses the choice by returning something that implements `Signer`,
@@ -24,7 +21,7 @@ pub trait SigningKey: Send + Sync {
 }
 
 /// A thing that can sign a message.
-pub trait Signer: Send + Sync {
+pub trait Signer : Send + Sync {
     /// Signs `message` using the selected scheme.
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, TLSError>;
 
@@ -104,24 +101,17 @@ impl CertifiedKey {
     ///
     /// These checks are not security-sensitive.  They are the
     /// *server* attempting to detect accidental misconfiguration.
-    pub fn cross_check_end_entity_cert(
-        &self,
-        name: Option<webpki::DNSNameRef>,
-    ) -> Result<(), TLSError> {
+    pub fn cross_check_end_entity_cert(&self, name: Option<webpki::DNSNameRef>) -> Result<(), TLSError> {
         // Always reject an empty certificate chain.
         let end_entity_cert = self.end_entity_cert().map_err(|()| {
             TLSError::General("No end-entity certificate in certificate chain".to_string())
         })?;
 
         // Reject syntactically-invalid end-entity certificates.
-        let end_entity_cert =
-            webpki::EndEntityCert::from(end_entity_cert.as_ref()).map_err(|_| {
-                TLSError::General(
-                    "End-entity certificate in certificate \
-                                  chain is syntactically invalid"
-                        .to_string(),
-                )
-            })?;
+        let end_entity_cert = webpki::EndEntityCert::from(end_entity_cert.as_ref()).map_err(|_| {
+                TLSError::General("End-entity certificate in certificate \
+                                  chain is syntactically invalid".to_string())
+        })?;
 
         if let Some(name) = name {
             // If SNI was offered then the certificate must be valid for
@@ -129,15 +119,9 @@ impl CertifiedKey {
             // certificate is valid; it only validates that the name is one
             // that the certificate is valid for, if the certificate is
             // valid.
-            if end_entity_cert
-                .verify_is_valid_for_dns_name(name)
-                .is_err()
-            {
-                return Err(TLSError::General(
-                    "The server certificate is not \
-                                             valid for the given name"
-                        .to_string(),
-                ));
+            if end_entity_cert.verify_is_valid_for_dns_name(name).is_err() {
+                return Err(TLSError::General("The server certificate is not \
+                                             valid for the given name".to_string()));
             }
         }
 
@@ -159,19 +143,15 @@ pub fn any_supported_type(der: &key::PrivateKey) -> Result<Box<dyn SigningKey>, 
 
 /// Parse `der` as any ECDSA key type, returning the first which works.
 pub fn any_ecdsa_type(der: &key::PrivateKey) -> Result<Box<dyn SigningKey>, ()> {
-    if let Ok(ecdsa_p256) = ECDSASigningKey::new(
-        der,
-        SignatureScheme::ECDSA_NISTP256_SHA256,
-        &signature::ECDSA_P256_SHA256_ASN1_SIGNING,
-    ) {
+    if let Ok(ecdsa_p256) = ECDSASigningKey::new(der,
+                                                 SignatureScheme::ECDSA_NISTP256_SHA256,
+                                                 &signature::ECDSA_P256_SHA256_ASN1_SIGNING) {
         return Ok(Box::new(ecdsa_p256));
     }
 
-    if let Ok(ecdsa_p384) = ECDSASigningKey::new(
-        der,
-        SignatureScheme::ECDSA_NISTP384_SHA384,
-        &signature::ECDSA_P384_SHA384_ASN1_SIGNING,
-    ) {
+    if let Ok(ecdsa_p384) = ECDSASigningKey::new(der,
+                                                 SignatureScheme::ECDSA_NISTP384_SHA384,
+                                                 &signature::ECDSA_P384_SHA384_ASN1_SIGNING) {
         return Ok(Box::new(ecdsa_p384));
     }
 
@@ -180,7 +160,8 @@ pub fn any_ecdsa_type(der: &key::PrivateKey) -> Result<Box<dyn SigningKey>, ()> 
 
 /// Parse `der` as any EdDSA key type, returning the first which works.
 pub fn any_eddsa_type(der: &key::PrivateKey) -> Result<Box<dyn SigningKey>, ()> {
-    if let Ok(ed25519) = Ed25519SigningKey::new(der, SignatureScheme::ED25519) {
+    if let Ok(ed25519) = Ed25519SigningKey::new(der,
+                                                SignatureScheme::ED25519) {
         return Ok(Box::new(ed25519));
     }
 
@@ -195,12 +176,12 @@ pub struct RSASigningKey {
 }
 
 static ALL_RSA_SCHEMES: &[SignatureScheme] = &[
-    SignatureScheme::RSA_PSS_SHA512,
-    SignatureScheme::RSA_PSS_SHA384,
-    SignatureScheme::RSA_PSS_SHA256,
-    SignatureScheme::RSA_PKCS1_SHA512,
-    SignatureScheme::RSA_PKCS1_SHA384,
-    SignatureScheme::RSA_PKCS1_SHA256,
+     SignatureScheme::RSA_PSS_SHA512,
+     SignatureScheme::RSA_PSS_SHA384,
+     SignatureScheme::RSA_PSS_SHA256,
+     SignatureScheme::RSA_PKCS1_SHA512,
+     SignatureScheme::RSA_PKCS1_SHA384,
+     SignatureScheme::RSA_PKCS1_SHA256,
 ];
 
 impl RSASigningKey {
@@ -209,7 +190,11 @@ impl RSASigningKey {
     pub fn new(der: &key::PrivateKey) -> Result<RSASigningKey, ()> {
         RsaKeyPair::from_der(&der.0)
             .or_else(|_| RsaKeyPair::from_pkcs8(&der.0))
-            .map(|s| RSASigningKey { key: Arc::new(s) })
+            .map(|s| {
+                 RSASigningKey {
+                     key: Arc::new(s),
+                 }
+            })
             .map_err(|_| ())
     }
 }
@@ -231,7 +216,7 @@ impl SigningKey for RSASigningKey {
 struct RSASigner {
     key: Arc<RsaKeyPair>,
     scheme: SignatureScheme,
-    encoding: &'static dyn signature::RsaEncoding,
+    encoding: &'static dyn signature::RsaEncoding
 }
 
 impl RSASigner {
@@ -246,11 +231,7 @@ impl RSASigner {
             _ => unreachable!(),
         };
 
-        Box::new(RSASigner {
-            key,
-            scheme,
-            encoding,
-        })
+        Box::new(RSASigner { key, scheme, encoding })
     }
 }
 
@@ -259,8 +240,7 @@ impl Signer for RSASigner {
         let mut sig = vec![0; self.key.public_modulus_len()];
 
         let rng = ring::rand::SystemRandom::new();
-        self.key
-            .sign(self.encoding, &rng, message, &mut sig)
+        self.key.sign(self.encoding, &rng, message, &mut sig)
             .map(|_| sig)
             .map_err(|_| TLSError::General("signing failed".to_string()))
     }
@@ -289,16 +269,11 @@ struct ECDSASigningKey {
 impl ECDSASigningKey {
     /// Make a new `ECDSASigningKey` from a DER encoding in PKCS#8 format,
     /// expecting a key usable with precisely the given signature scheme.
-    pub fn new(
-        der: &key::PrivateKey,
-        scheme: SignatureScheme,
-        sigalg: &'static signature::EcdsaSigningAlgorithm,
-    ) -> Result<ECDSASigningKey, ()> {
+    pub fn new(der: &key::PrivateKey,
+               scheme: SignatureScheme,
+               sigalg: &'static signature::EcdsaSigningAlgorithm) -> Result<ECDSASigningKey, ()> {
         EcdsaKeyPair::from_pkcs8(sigalg, &der.0)
-            .map(|kp| ECDSASigningKey {
-                key: Arc::new(kp),
-                scheme,
-            })
+            .map(|kp| ECDSASigningKey { key: Arc::new(kp), scheme })
             .map_err(|_| ())
     }
 }
@@ -306,10 +281,7 @@ impl ECDSASigningKey {
 impl SigningKey for ECDSASigningKey {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
         if offered.contains(&self.scheme) {
-            Some(Box::new(ECDSASigner {
-                key: self.key.clone(),
-                scheme: self.scheme,
-            }))
+            Some(Box::new(ECDSASigner { key: self.key.clone(), scheme: self.scheme } ))
         } else {
             None
         }
@@ -329,8 +301,7 @@ struct ECDSASigner {
 impl Signer for ECDSASigner {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, TLSError> {
         let rng = ring::rand::SystemRandom::new();
-        self.key
-            .sign(&rng, message)
+        self.key.sign(&rng, message)
             .map_err(|_| TLSError::General("signing failed".into()))
             .map(|sig| sig.as_ref().into())
     }
@@ -359,12 +330,10 @@ struct Ed25519SigningKey {
 impl Ed25519SigningKey {
     /// Make a new `Ed25519SigningKey` from a DER encoding in PKCS#8 format,
     /// expecting a key usable with precisely the given signature scheme.
-    pub fn new(der: &key::PrivateKey, scheme: SignatureScheme) -> Result<Ed25519SigningKey, ()> {
+    pub fn new(der: &key::PrivateKey,
+               scheme: SignatureScheme) -> Result<Ed25519SigningKey, ()> {
         Ed25519KeyPair::from_pkcs8_maybe_unchecked(&der.0)
-            .map(|kp| Ed25519SigningKey {
-                key: Arc::new(kp),
-                scheme,
-            })
+            .map(|kp| Ed25519SigningKey { key: Arc::new(kp), scheme })
             .map_err(|_| ())
     }
 }
@@ -372,10 +341,7 @@ impl Ed25519SigningKey {
 impl SigningKey for Ed25519SigningKey {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
         if offered.contains(&self.scheme) {
-            Some(Box::new(Ed25519Signer {
-                key: self.key.clone(),
-                scheme: self.scheme,
-            }))
+            Some(Box::new(Ed25519Signer { key: self.key.clone(), scheme: self.scheme } ))
         } else {
             None
         }
@@ -408,9 +374,11 @@ pub fn supported_sign_tls13() -> &'static [SignatureScheme] {
     &[
         SignatureScheme::ECDSA_NISTP384_SHA384,
         SignatureScheme::ECDSA_NISTP256_SHA256,
+
         SignatureScheme::RSA_PSS_SHA512,
         SignatureScheme::RSA_PSS_SHA384,
         SignatureScheme::RSA_PSS_SHA256,
+
         SignatureScheme::ED25519,
     ]
 }

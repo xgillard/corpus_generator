@@ -144,7 +144,7 @@
 //! that implements [`AsyncRead`] and [`AsyncWrite`] into a `Sink`/`Stream` of
 //! your structured data.
 //!
-//! [tokio-util]: https://docs.rs/tokio-util/0.6/tokio_util/codec/index.html
+//! [tokio-util]: https://docs.rs/tokio-util/0.3/tokio_util/codec/index.html
 //!
 //! # Standard input and output
 //!
@@ -169,16 +169,16 @@
 //! [`AsyncWrite`]: trait@AsyncWrite
 //! [`AsyncReadExt`]: trait@AsyncReadExt
 //! [`AsyncWriteExt`]: trait@AsyncWriteExt
-//! ["codec"]: https://docs.rs/tokio-util/0.6/tokio_util/codec/index.html
-//! [`Encoder`]: https://docs.rs/tokio-util/0.6/tokio_util/codec/trait.Encoder.html
-//! [`Decoder`]: https://docs.rs/tokio-util/0.6/tokio_util/codec/trait.Decoder.html
+//! ["codec"]: https://docs.rs/tokio-util/0.3/tokio_util/codec/index.html
+//! [`Encoder`]: https://docs.rs/tokio-util/0.3/tokio_util/codec/trait.Encoder.html
+//! [`Decoder`]: https://docs.rs/tokio-util/0.3/tokio_util/codec/trait.Decoder.html
 //! [`Error`]: struct@Error
 //! [`ErrorKind`]: enum@ErrorKind
 //! [`Result`]: type@Result
 //! [`Read`]: std::io::Read
 //! [`SeekFrom`]: enum@SeekFrom
 //! [`Sink`]: https://docs.rs/futures/0.3/futures/sink/trait.Sink.html
-//! [`Stream`]: https://docs.rs/futures/0.3/futures/stream/trait.Stream.html
+//! [`Stream`]: crate::stream::Stream
 //! [`Write`]: std::io::Write
 cfg_io_blocking! {
     pub(crate) mod blocking;
@@ -196,48 +196,21 @@ pub use self::async_seek::AsyncSeek;
 mod async_write;
 pub use self::async_write::AsyncWrite;
 
-mod read_buf;
-pub use self::read_buf::ReadBuf;
-
 // Re-export some types from `std::io` so that users don't have to deal
 // with conflicts when `use`ing `tokio::io` and `std::io`.
-#[doc(no_inline)]
 pub use std::io::{Error, ErrorKind, Result, SeekFrom};
 
-cfg_io_driver_impl! {
+cfg_io_driver! {
     pub(crate) mod driver;
 
-    cfg_net! {
-        pub use driver::{Interest, Ready};
-    }
-
     mod poll_evented;
+    pub use poll_evented::PollEvented;
 
-    #[cfg(not(loom))]
-    pub(crate) use poll_evented::PollEvented;
-}
-
-cfg_aio! {
-    /// BSD-specific I/O types
-    pub mod bsd {
-        mod poll_aio;
-
-        pub use poll_aio::{Aio, AioEvent, AioSource};
-    }
-}
-
-cfg_net_unix! {
-    mod async_fd;
-
-    pub mod unix {
-        //! Asynchronous IO structures specific to Unix-like operating systems.
-        pub use super::async_fd::{AsyncFd, AsyncFdReadyGuard, AsyncFdReadyMutGuard, TryIoError};
-    }
+    mod registration;
+    pub use registration::Registration;
 }
 
 cfg_io_std! {
-    mod stdio_common;
-
     mod stderr;
     pub use stderr::{stderr, Stderr};
 
@@ -253,11 +226,18 @@ cfg_io_util! {
     pub use split::{split, ReadHalf, WriteHalf};
 
     pub(crate) mod seek;
+    pub use self::seek::Seek;
+
     pub(crate) mod util;
     pub use util::{
-        copy, copy_bidirectional, copy_buf, duplex, empty, repeat, sink, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt,
-        BufReader, BufStream, BufWriter, DuplexStream, Empty, Lines, Repeat, Sink, Split, Take,
+        copy, duplex, empty, repeat, sink, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt,
+        BufReader, BufStream, BufWriter, DuplexStream, Copy, Empty, Lines, Repeat, Sink, Split, Take,
     };
+
+    cfg_stream! {
+        pub use util::{stream_reader, StreamReader};
+        pub use util::{reader_stream, ReaderStream};
+    }
 }
 
 cfg_not_io_util! {
@@ -270,7 +250,7 @@ cfg_io_blocking! {
     /// Types in this module can be mocked out in tests.
     mod sys {
         // TODO: don't rename
-        pub(crate) use crate::blocking::spawn_blocking as run;
-        pub(crate) use crate::blocking::JoinHandle as Blocking;
+        pub(crate) use crate::runtime::spawn_blocking as run;
+        pub(crate) use crate::task::JoinHandle as Blocking;
     }
 }

@@ -43,7 +43,7 @@ it is desirable to use a server which is able to better cope with the load and
 wont be DoS'ed near the project deadline.
 
 An other advantage, stems from the fact that this server has been written with 
-`rust + rocket` which is considered ok for prod whereas `flask` still warns 
+`rust + actix` which is considered ok for prod whereas `flask` still warns 
 against it. Plus, rust is a much safer language than python. Which means our
 machine will not be used to mine bitcoins instead of serving cutom student corpora.
 
@@ -71,23 +71,8 @@ directory where `public/corpus/` is a folder containing the corpora that can
 be customized. 
 
 In order to make the service publicly available, and to make the server bind
-a chosen port (port `80` for instance); the server uses two environment 
-variables: `ROCKET_ADDRESS` and `ROCKET_PORT`. Hence the complete command to 
-run would be: 
-```
-# ipv4
-ROCKET_ADDRESS='0.0.0.0' ROCKET_PORT=80 nohup ./target/release/corpus_generator &
-
-# ipv6
-ROCKET_ADDRESS='::' ROCKET_PORT=80 nohup ./target/release/corpus_generator &
-```
-
-I personally find it a bit long to type that whole command whenever I need to
-spawn the service, so I made a script for it. You may just as well decide to 
-save some time and reuse that one.
-```
-./corpus.sh
-```
+a chosen port you only need to edit the configuration file (`Rocket.toml`) and
+then restart the server (`server.sh restart`).
 
 ## Techical Note
 Because the VM on the INGI cloud use ipv6 only, and because github.com does not

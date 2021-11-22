@@ -18,15 +18,16 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // The usage is similar as with the standard library's `Command` type
-//!     let mut child = Command::new("echo")
-//!         .arg("hello")
-//!         .arg("world")
-//!         .spawn()
-//!         .expect("failed to spawn");
+//!     // The usage is the same as with the standard library's `Command` type, however the value
+//!     // returned from `spawn` is a `Result` containing a `Future`.
+//!     let child = Command::new("echo").arg("hello").arg("world")
+//!                         .spawn();
 //!
-//!     // Await until the command completes
-//!     let status = child.wait().await?;
+//!     // Make sure our child succeeded in spawning and process the result
+//!     let future = child.expect("failed to spawn");
+//!
+//!     // Await until the future (and the command) completes
+//!     let status = future.await?;
 //!     println!("the command exited with: {}", status);
 //!     Ok(())
 //! }
@@ -82,8 +83,8 @@
 //!
 //!     // Ensure the child process is spawned in the runtime so it can
 //!     // make progress on its own while we await for any output.
-//!     tokio::spawn(async move {
-//!         let status = child.wait().await
+//!     tokio::spawn(async {
+//!         let status = child.await
 //!             .expect("child process encountered an error");
 //!
 //!         println!("child status was: {}", status);
@@ -97,91 +98,21 @@
 //! }
 //! ```
 //!
-//! With some coordination, we can also pipe the output of one command into
-//! another.
-//!
-//! ```no_run
-//! use tokio::join;
-//! use tokio::process::Command;
-//! use std::convert::TryInto;
-//! use std::process::Stdio;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut echo = Command::new("echo")
-//!         .arg("hello world!")
-//!         .stdout(Stdio::piped())
-//!         .spawn()
-//!         .expect("failed to spawn echo");
-//!
-//!     let tr_stdin: Stdio = echo
-//!         .stdout
-//!         .take()
-//!         .unwrap()
-//!         .try_into()
-//!         .expect("failed to convert to Stdio");
-//!
-//!     let tr = Command::new("tr")
-//!         .arg("a-z")
-//!         .arg("A-Z")
-//!         .stdin(tr_stdin)
-//!         .stdout(Stdio::piped())
-//!         .spawn()
-//!         .expect("failed to spawn tr");
-//!
-//!     let (echo_result, tr_output) = join!(echo.wait(), tr.wait_with_output());
-//!
-//!     assert!(echo_result.unwrap().success());
-//!
-//!     let tr_output = tr_output.expect("failed to await tr");
-//!     assert!(tr_output.status.success());
-//!
-//!     assert_eq!(tr_output.stdout, b"HELLO WORLD!\n");
-//!
-//!     Ok(())
-//! }
-//! ```
-//!
 //! # Caveats
-//!
-//! ## Dropping/Cancellation
 //!
 //! Similar to the behavior to the standard library, and unlike the futures
 //! paradigm of dropping-implies-cancellation, a spawned process will, by
 //! default, continue to execute even after the `Child` handle has been dropped.
 //!
-//! The [`Command::kill_on_drop`] method can be used to modify this behavior
+//! The `Command::kill_on_drop` method can be used to modify this behavior
 //! and kill the child process if the `Child` wrapper is dropped before it
 //! has exited.
 //!
-//! ## Unix Processes
-//!
-//! On Unix platforms processes must be "reaped" by their parent process after
-//! they have exited in order to release all OS resources. A child process which
-//! has exited, but has not yet been reaped by its parent is considered a "zombie"
-//! process. Such processes continue to count against limits imposed by the system,
-//! and having too many zombie processes present can prevent additional processes
-//! from being spawned.
-//!
-//! The tokio runtime will, on a best-effort basis, attempt to reap and clean up
-//! any process which it has spawned. No additional guarantees are made with regards
-//! how quickly or how often this procedure will take place.
-//!
-//! It is recommended to avoid dropping a [`Child`] process handle before it has been
-//! fully `await`ed if stricter cleanup guarantees are required.
-//!
 //! [`Command`]: crate::process::Command
-//! [`Command::kill_on_drop`]: crate::process::Command::kill_on_drop
-//! [`Child`]: crate::process::Child
 
 #[path = "unix/mod.rs"]
 #[cfg(unix)]
 mod imp;
-
-#[cfg(unix)]
-pub(crate) mod unix {
-    pub(crate) use super::imp::*;
-}
 
 #[path = "windows.rs"]
 #[cfg(windows)]
@@ -189,17 +120,14 @@ mod imp;
 
 mod kill;
 
-use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
+use crate::io::{AsyncRead, AsyncWrite};
 use crate::process::kill::Kill;
 
-use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-#[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, RawHandle};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -225,9 +153,9 @@ pub struct Command {
 
 pub(crate) struct SpawnedChild {
     child: imp::Child,
-    stdin: Option<imp::ChildStdio>,
-    stdout: Option<imp::ChildStdio>,
-    stderr: Option<imp::ChildStdio>,
+    stdin: Option<imp::ChildStdin>,
+    stdout: Option<imp::ChildStdout>,
+    stderr: Option<imp::ChildStderr>,
 }
 
 impl Command {
@@ -481,7 +409,7 @@ impl Command {
     /// Basic usage:
     ///
     /// ```no_run
-    /// use tokio::process::Command;
+    /// use tokio::process::Command;;
     /// use std::process::Stdio;
     ///
     /// let command = Command::new("ls")
@@ -505,7 +433,7 @@ impl Command {
     /// Basic usage:
     ///
     /// ```no_run
-    /// use tokio::process::Command;
+    /// use tokio::process::Command;;
     /// use std::process::{Stdio};
     ///
     /// let command = Command::new("ls")
@@ -522,26 +450,6 @@ impl Command {
     /// By default, this value is assumed to be `false`, meaning the next spawned
     /// process will not be killed on drop, similar to the behavior of the standard
     /// library.
-    ///
-    /// # Caveats
-    ///
-    /// On Unix platforms processes must be "reaped" by their parent process after
-    /// they have exited in order to release all OS resources. A child process which
-    /// has exited, but has not yet been reaped by its parent is considered a "zombie"
-    /// process. Such processes continue to count against limits imposed by the system,
-    /// and having too many zombie processes present can prevent additional processes
-    /// from being spawned.
-    ///
-    /// Although issuing a `kill` signal to the child process is a synchronous
-    /// operation, the resulting zombie process cannot be `.await`ed inside of the
-    /// destructor to avoid blocking other tasks. The tokio runtime will, on a
-    /// best-effort basis, attempt to reap and clean up such processes in the
-    /// background, but makes no additional guarantees are made with regards
-    /// how quickly or how often this procedure will take place.
-    ///
-    /// If stronger guarantees are required, it is recommended to avoid dropping
-    /// a [`Child`] handle where possible, and instead utilize `child.wait().await`
-    /// or `child.kill().await` where possible.
     pub fn kill_on_drop(&mut self, kill_on_drop: bool) -> &mut Command {
         self.kill_on_drop = kill_on_drop;
         self
@@ -553,7 +461,6 @@ impl Command {
     ///
     /// [1]: https://msdn.microsoft.com/en-us/library/windows/desktop/ms684863(v=vs.85).aspx
     #[cfg(windows)]
-    #[cfg_attr(docsrs, doc(cfg(windows)))]
     pub fn creation_flags(&mut self, flags: u32) -> &mut Command {
         self.std.creation_flags(flags);
         self
@@ -563,7 +470,6 @@ impl Command {
     /// `setuid` call in the child process. Failure in the `setuid`
     /// call will cause the spawn to fail.
     #[cfg(unix)]
-    #[cfg_attr(docsrs, doc(cfg(unix)))]
     pub fn uid(&mut self, id: u32) -> &mut Command {
         self.std.uid(id);
         self
@@ -572,23 +478,8 @@ impl Command {
     /// Similar to `uid` but sets the group ID of the child process. This has
     /// the same semantics as the `uid` field.
     #[cfg(unix)]
-    #[cfg_attr(docsrs, doc(cfg(unix)))]
     pub fn gid(&mut self, id: u32) -> &mut Command {
         self.std.gid(id);
-        self
-    }
-
-    /// Set executable argument
-    ///
-    /// Set the first process argument, `argv[0]`, to something other than the
-    /// default executable path.
-    #[cfg(unix)]
-    #[cfg_attr(docsrs, doc(cfg(unix)))]
-    pub fn arg0<S>(&mut self, arg: S) -> &mut Command
-    where
-        S: AsRef<OsStr>,
-    {
-        self.std.arg0(arg);
         self
     }
 
@@ -622,7 +513,6 @@ impl Command {
     /// working directory have successfully been changed, so output to these
     /// locations may not appear where intended.
     #[cfg(unix)]
-    #[cfg_attr(docsrs, doc(cfg(unix)))]
     pub unsafe fn pre_exec<F>(&mut self, f: F) -> &mut Command
     where
         F: FnMut() -> io::Result<()> + Send + Sync + 'static,
@@ -644,6 +534,16 @@ impl Command {
     /// All I/O this child does will be associated with the current default
     /// event loop.
     ///
+    /// # Caveats
+    ///
+    /// Similar to the behavior to the standard library, and unlike the futures
+    /// paradigm of dropping-implies-cancellation, the spawned process will, by
+    /// default, continue to execute even after the `Child` handle has been dropped.
+    ///
+    /// The `Command::kill_on_drop` method can be used to modify this behavior
+    /// and kill the child process if the `Child` wrapper is dropped before it
+    /// has exited.
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -655,55 +555,16 @@ impl Command {
     ///     Command::new("ls")
     ///         .spawn()
     ///         .expect("ls command failed to start")
-    ///         .wait()
     ///         .await
     ///         .expect("ls command failed to run")
     /// }
     /// ```
-    ///
-    /// # Caveats
-    ///
-    /// ## Dropping/Cancellation
-    ///
-    /// Similar to the behavior to the standard library, and unlike the futures
-    /// paradigm of dropping-implies-cancellation, a spawned process will, by
-    /// default, continue to execute even after the `Child` handle has been dropped.
-    ///
-    /// The [`Command::kill_on_drop`] method can be used to modify this behavior
-    /// and kill the child process if the `Child` wrapper is dropped before it
-    /// has exited.
-    ///
-    /// ## Unix Processes
-    ///
-    /// On Unix platforms processes must be "reaped" by their parent process after
-    /// they have exited in order to release all OS resources. A child process which
-    /// has exited, but has not yet been reaped by its parent is considered a "zombie"
-    /// process. Such processes continue to count against limits imposed by the system,
-    /// and having too many zombie processes present can prevent additional processes
-    /// from being spawned.
-    ///
-    /// The tokio runtime will, on a best-effort basis, attempt to reap and clean up
-    /// any process which it has spawned. No additional guarantees are made with regards
-    /// how quickly or how often this procedure will take place.
-    ///
-    /// It is recommended to avoid dropping a [`Child`] process handle before it has been
-    /// fully `await`ed if stricter cleanup guarantees are required.
-    ///
-    /// [`Command`]: crate::process::Command
-    /// [`Command::kill_on_drop`]: crate::process::Command::kill_on_drop
-    /// [`Child`]: crate::process::Child
-    ///
-    /// # Errors
-    ///
-    /// On Unix platforms this method will fail with `std::io::ErrorKind::WouldBlock`
-    /// if the system process limit is reached (which includes other applications
-    /// running on the system).
     pub fn spawn(&mut self) -> io::Result<Child> {
         imp::spawn_child(&mut self.std).map(|spawned_child| Child {
-            child: FusedChild::Child(ChildDropGuard {
+            child: ChildDropGuard {
                 inner: spawned_child.child,
                 kill_on_drop: self.kill_on_drop,
-            }),
+            },
             stdin: spawned_child.stdin.map(|inner| ChildStdin { inner }),
             stdout: spawned_child.stdout.map(|inner| ChildStdout { inner }),
             stderr: spawned_child.stderr.map(|inner| ChildStderr { inner }),
@@ -720,19 +581,13 @@ impl Command {
     /// All I/O this child does will be associated with the current default
     /// event loop.
     ///
-    /// The destructor of the future returned by this function will kill
-    /// the child if [`kill_on_drop`] is set to true.
-    ///
-    /// [`kill_on_drop`]: fn@Self::kill_on_drop
+    /// If this future is dropped before the future resolves, then
+    /// the child will be killed, if it was spawned.
     ///
     /// # Errors
     ///
     /// This future will return an error if the child process cannot be spawned
     /// or if there is an error while awaiting its status.
-    ///
-    /// On Unix platforms this method will fail with `std::io::ErrorKind::WouldBlock`
-    /// if the system process limit is reached (which includes other applications
-    /// running on the system).
     ///
     /// # Examples
     ///
@@ -747,7 +602,6 @@ impl Command {
     ///         .await
     ///         .expect("ls command failed to run")
     /// }
-    /// ```
     pub fn status(&mut self) -> impl Future<Output = io::Result<ExitStatus>> {
         let child = self.spawn();
 
@@ -761,7 +615,7 @@ impl Command {
             child.stdout.take();
             child.stderr.take();
 
-            child.wait().await
+            child.await
         }
     }
 
@@ -783,19 +637,9 @@ impl Command {
     /// All I/O this child does will be associated with the current default
     /// event loop.
     ///
-    /// The destructor of the future returned by this function will kill
-    /// the child if [`kill_on_drop`] is set to true.
+    /// If this future is dropped before the future resolves, then
+    /// the child will be killed, if it was spawned.
     ///
-    /// [`kill_on_drop`]: fn@Self::kill_on_drop
-    ///
-    /// # Errors
-    ///
-    /// This future will return an error if the child process cannot be spawned
-    /// or if there is an error while awaiting its status.
-    ///
-    /// On Unix platforms this method will fail with `std::io::ErrorKind::WouldBlock`
-    /// if the system process limit is reached (which includes other applications
-    /// running on the system).
     /// # Examples
     ///
     /// Basic usage:
@@ -810,7 +654,6 @@ impl Command {
     ///         .expect("ls command failed to run");
     ///     println!("stderr of ls: {:?}", output.stderr);
     /// }
-    /// ```
     pub fn output(&mut self) -> impl Future<Output = io::Result<Output>> {
         self.std.stdout(Stdio::piped());
         self.std.stderr(Stdio::piped());
@@ -882,15 +725,11 @@ where
     }
 }
 
-/// Keeps track of the exit status of a child process without worrying about
-/// polling the underlying futures even after they have completed.
-#[derive(Debug)]
-enum FusedChild {
-    Child(ChildDropGuard<imp::Child>),
-    Done(ExitStatus),
-}
-
 /// Representation of a child process spawned onto an event loop.
+///
+/// This type is also a future which will yield the `ExitStatus` of the
+/// underlying child process. A `Child` here also provides access to information
+/// like the OS-assigned identifier and the stdio streams.
 ///
 /// # Caveats
 /// Similar to the behavior to the standard library, and unlike the futures
@@ -900,85 +739,28 @@ enum FusedChild {
 /// The `Command::kill_on_drop` method can be used to modify this behavior
 /// and kill the child process if the `Child` wrapper is dropped before it
 /// has exited.
+#[must_use = "futures do nothing unless polled"]
 #[derive(Debug)]
 pub struct Child {
-    child: FusedChild,
+    child: ChildDropGuard<imp::Child>,
 
     /// The handle for writing to the child's standard input (stdin), if it has
-    /// been captured. To avoid partially moving the `child` and thus blocking
-    /// yourself from calling functions on `child` while using `stdin`, you might
-    /// find it helpful to do:
-    ///
-    /// ```no_run
-    /// # let mut child = tokio::process::Command::new("echo").spawn().unwrap();
-    /// let stdin = child.stdin.take().unwrap();
-    /// ```
+    /// been captured.
     pub stdin: Option<ChildStdin>,
 
     /// The handle for reading from the child's standard output (stdout), if it
-    /// has been captured. You might find it helpful to do
-    ///
-    /// ```no_run
-    /// # let mut child = tokio::process::Command::new("echo").spawn().unwrap();
-    /// let stdout = child.stdout.take().unwrap();
-    /// ```
-    ///
-    /// to avoid partially moving the `child` and thus blocking yourself from calling
-    /// functions on `child` while using `stdout`.
+    /// has been captured.
     pub stdout: Option<ChildStdout>,
 
     /// The handle for reading from the child's standard error (stderr), if it
-    /// has been captured. You might find it helpful to do
-    ///
-    /// ```no_run
-    /// # let mut child = tokio::process::Command::new("echo").spawn().unwrap();
-    /// let stderr = child.stderr.take().unwrap();
-    /// ```
-    ///
-    /// to avoid partially moving the `child` and thus blocking yourself from calling
-    /// functions on `child` while using `stderr`.
+    /// has been captured.
     pub stderr: Option<ChildStderr>,
 }
 
 impl Child {
-    /// Returns the OS-assigned process identifier associated with this child
-    /// while it is still running.
-    ///
-    /// Once the child has been polled to completion this will return `None`.
-    /// This is done to avoid confusion on platforms like Unix where the OS
-    /// identifier could be reused once the process has completed.
-    pub fn id(&self) -> Option<u32> {
-        match &self.child {
-            FusedChild::Child(child) => Some(child.inner.id()),
-            FusedChild::Done(_) => None,
-        }
-    }
-
-    /// Extracts the raw handle of the process associated with this child while
-    /// it is still running. Returns `None` if the child has exited.
-    #[cfg(windows)]
-    pub fn raw_handle(&self) -> Option<RawHandle> {
-        match &self.child {
-            FusedChild::Child(c) => Some(c.inner.as_raw_handle()),
-            FusedChild::Done(_) => None,
-        }
-    }
-
-    /// Attempts to force the child to exit, but does not wait for the request
-    /// to take effect.
-    ///
-    /// On Unix platforms, this is the equivalent to sending a SIGKILL. Note
-    /// that on Unix platforms it is possible for a zombie process to remain
-    /// after a kill is sent; to avoid this, the caller should ensure that either
-    /// `child.wait().await` or `child.try_wait()` is invoked successfully.
-    pub fn start_kill(&mut self) -> io::Result<()> {
-        match &mut self.child {
-            FusedChild::Child(child) => child.kill(),
-            FusedChild::Done(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid argument: can't kill an exited process",
-            )),
-        }
+    /// Returns the OS-assigned process identifier associated with this child.
+    pub fn id(&self) -> u32 {
+        self.child.inner.id()
     }
 
     /// Forces the child to exit.
@@ -1001,108 +783,35 @@ impl Child {
     ///     let mut child = Command::new("sleep").arg("1").spawn().unwrap();
     ///     tokio::spawn(async move { send.send(()) });
     ///     tokio::select! {
-    ///         _ = child.wait() => {}
-    ///         _ = recv => child.kill().await.expect("kill failed"),
+    ///         _ = &mut child => {}
+    ///         _ = recv => {
+    ///             &mut child.kill();
+    ///             // NB: await the child here to avoid a zombie process on Unix platforms
+    ///             child.await.unwrap();
+    ///         }
     ///     }
     /// }
-    /// ```
-    pub async fn kill(&mut self) -> io::Result<()> {
-        self.start_kill()?;
-        self.wait().await?;
-        Ok(())
+
+    pub fn kill(&mut self) -> io::Result<()> {
+        self.child.kill()
     }
 
-    /// Waits for the child to exit completely, returning the status that it
-    /// exited with. This function will continue to have the same return value
-    /// after it has been called at least once.
-    ///
-    /// The stdin handle to the child process, if any, will be closed
-    /// before waiting. This helps avoid deadlock: it ensures that the
-    /// child does not block waiting for input from the parent, while
-    /// the parent waits for the child to exit.
-    ///
-    /// If the caller wishes to explicitly control when the child's stdin
-    /// handle is closed, they may `.take()` it before calling `.wait()`:
-    ///
-    /// ```
-    /// # #[cfg(not(unix))]fn main(){}
-    /// # #[cfg(unix)]
-    /// use tokio::io::AsyncWriteExt;
-    /// # #[cfg(unix)]
-    /// use tokio::process::Command;
-    /// # #[cfg(unix)]
-    /// use std::process::Stdio;
-    ///
-    /// # #[cfg(unix)]
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let mut child = Command::new("cat")
-    ///         .stdin(Stdio::piped())
-    ///         .spawn()
-    ///         .unwrap();
-    ///
-    ///     let mut stdin = child.stdin.take().unwrap();
-    ///     tokio::spawn(async move {
-    ///         // do something with stdin here...
-    ///         stdin.write_all(b"hello world\n").await.unwrap();
-    ///
-    ///         // then drop when finished
-    ///         drop(stdin);
-    ///     });
-    ///
-    ///     // wait for the process to complete
-    ///     let _ = child.wait().await;
-    /// }
-    /// ```
-    pub async fn wait(&mut self) -> io::Result<ExitStatus> {
-        // Ensure stdin is closed so the child isn't stuck waiting on
-        // input while the parent is waiting for it to exit.
-        drop(self.stdin.take());
-
-        match &mut self.child {
-            FusedChild::Done(exit) => Ok(*exit),
-            FusedChild::Child(child) => {
-                let ret = child.await;
-
-                if let Ok(exit) = ret {
-                    self.child = FusedChild::Done(exit);
-                }
-
-                ret
-            }
-        }
+    #[doc(hidden)]
+    #[deprecated(note = "please use `child.stdin` instead")]
+    pub fn stdin(&mut self) -> &mut Option<ChildStdin> {
+        &mut self.stdin
     }
 
-    /// Attempts to collect the exit status of the child if it has already
-    /// exited.
-    ///
-    /// This function will not block the calling thread and will only
-    /// check to see if the child process has exited or not. If the child has
-    /// exited then on Unix the process ID is reaped. This function is
-    /// guaranteed to repeatedly return a successful exit status so long as the
-    /// child has already exited.
-    ///
-    /// If the child has exited, then `Ok(Some(status))` is returned. If the
-    /// exit status is not available at this time then `Ok(None)` is returned.
-    /// If an error occurs, then that error is returned.
-    ///
-    /// Note that unlike `wait`, this function will not attempt to drop stdin,
-    /// nor will it wake the current task if the child exits.
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        match &mut self.child {
-            FusedChild::Done(exit) => Ok(Some(*exit)),
-            FusedChild::Child(guard) => {
-                let ret = guard.inner.try_wait();
+    #[doc(hidden)]
+    #[deprecated(note = "please use `child.stdout` instead")]
+    pub fn stdout(&mut self) -> &mut Option<ChildStdout> {
+        &mut self.stdout
+    }
 
-                if let Ok(Some(exit)) = ret {
-                    // Avoid the overhead of trying to kill a reaped process
-                    guard.kill_on_drop = false;
-                    self.child = FusedChild::Done(exit);
-                }
-
-                ret
-            }
-        }
+    #[doc(hidden)]
+    #[deprecated(note = "please use `child.stderr` instead")]
+    pub fn stderr(&mut self) -> &mut Option<ChildStderr> {
+        &mut self.stderr
     }
 
     /// Returns a future that will resolve to an `Output`, containing the exit
@@ -1132,10 +841,11 @@ impl Child {
             Ok(vec)
         }
 
+        drop(self.stdin.take());
         let stdout_fut = read_to_end(self.stdout.take());
         let stderr_fut = read_to_end(self.stderr.take());
 
-        let (status, stdout, stderr) = try_join3(self.wait(), stdout_fut, stderr_fut).await?;
+        let (status, stdout, stderr) = try_join3(self, stdout_fut, stderr_fut).await?;
 
         Ok(Output {
             status,
@@ -1145,13 +855,21 @@ impl Child {
     }
 }
 
+impl Future for Child {
+    type Output = io::Result<ExitStatus>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.child).poll(cx)
+    }
+}
+
 /// The standard input stream for spawned children.
 ///
 /// This type implements the `AsyncWrite` trait to pass data to the stdin handle of
 /// handle of a child process asynchronously.
 #[derive(Debug)]
 pub struct ChildStdin {
-    inner: imp::ChildStdio,
+    inner: imp::ChildStdin,
 }
 
 /// The standard output stream for spawned children.
@@ -1160,7 +878,7 @@ pub struct ChildStdin {
 /// handle of a child process asynchronously.
 #[derive(Debug)]
 pub struct ChildStdout {
-    inner: imp::ChildStdio,
+    inner: imp::ChildStdout,
 }
 
 /// The standard error stream for spawned children.
@@ -1169,115 +887,54 @@ pub struct ChildStdout {
 /// handle of a child process asynchronously.
 #[derive(Debug)]
 pub struct ChildStderr {
-    inner: imp::ChildStdio,
-}
-
-impl ChildStdin {
-    /// Create an asynchronous `ChildStdin` from a synchronous one.
-    ///
-    /// # Errors
-    ///
-    /// This method may fail if an error is encountered when setting the pipe to
-    /// non-blocking mode, or when registering the pipe with the runtime's IO
-    /// driver.
-    pub fn from_std(inner: std::process::ChildStdin) -> io::Result<Self> {
-        Ok(Self {
-            inner: imp::stdio(inner)?,
-        })
-    }
-}
-
-impl ChildStdout {
-    /// Create an asynchronous `ChildStderr` from a synchronous one.
-    ///
-    /// # Errors
-    ///
-    /// This method may fail if an error is encountered when setting the pipe to
-    /// non-blocking mode, or when registering the pipe with the runtime's IO
-    /// driver.
-    pub fn from_std(inner: std::process::ChildStdout) -> io::Result<Self> {
-        Ok(Self {
-            inner: imp::stdio(inner)?,
-        })
-    }
-}
-
-impl ChildStderr {
-    /// Create an asynchronous `ChildStderr` from a synchronous one.
-    ///
-    /// # Errors
-    ///
-    /// This method may fail if an error is encountered when setting the pipe to
-    /// non-blocking mode, or when registering the pipe with the runtime's IO
-    /// driver.
-    pub fn from_std(inner: std::process::ChildStderr) -> io::Result<Self> {
-        Ok(Self {
-            inner: imp::stdio(inner)?,
-        })
-    }
+    inner: imp::ChildStderr,
 }
 
 impl AsyncWrite for ChildStdin {
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        self.inner.poll_write(cx, buf)
+        Pin::new(&mut self.inner).poll_write(cx, buf)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 
 impl AsyncRead for ChildStdout {
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
+        // https://github.com/rust-lang/rust/blob/09c817eeb29e764cfc12d0a8d94841e3ffe34023/src/libstd/process.rs#L314
+        false
+    }
+
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        // Safety: pipes support reading into uninitialized memory
-        unsafe { self.inner.poll_read(cx, buf) }
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
 
 impl AsyncRead for ChildStderr {
+    unsafe fn prepare_uninitialized_buffer(&self, _buf: &mut [std::mem::MaybeUninit<u8>]) -> bool {
+        // https://github.com/rust-lang/rust/blob/09c817eeb29e764cfc12d0a8d94841e3ffe34023/src/libstd/process.rs#L375
+        false
+    }
+
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        // Safety: pipes support reading into uninitialized memory
-        unsafe { self.inner.poll_read(cx, buf) }
-    }
-}
-
-impl TryInto<Stdio> for ChildStdin {
-    type Error = io::Error;
-
-    fn try_into(self) -> Result<Stdio, Self::Error> {
-        imp::convert_to_stdio(self.inner)
-    }
-}
-
-impl TryInto<Stdio> for ChildStdout {
-    type Error = io::Error;
-
-    fn try_into(self) -> Result<Stdio, Self::Error> {
-        imp::convert_to_stdio(self.inner)
-    }
-}
-
-impl TryInto<Stdio> for ChildStderr {
-    type Error = io::Error;
-
-    fn try_into(self) -> Result<Stdio, Self::Error> {
-        imp::convert_to_stdio(self.inner)
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
 
@@ -1289,19 +946,19 @@ mod sys {
 
     impl AsRawFd for ChildStdin {
         fn as_raw_fd(&self) -> RawFd {
-            self.inner.as_raw_fd()
+            self.inner.get_ref().as_raw_fd()
         }
     }
 
     impl AsRawFd for ChildStdout {
         fn as_raw_fd(&self) -> RawFd {
-            self.inner.as_raw_fd()
+            self.inner.get_ref().as_raw_fd()
         }
     }
 
     impl AsRawFd for ChildStderr {
         fn as_raw_fd(&self) -> RawFd {
-            self.inner.as_raw_fd()
+            self.inner.get_ref().as_raw_fd()
         }
     }
 }
@@ -1314,19 +971,19 @@ mod sys {
 
     impl AsRawHandle for ChildStdin {
         fn as_raw_handle(&self) -> RawHandle {
-            self.inner.as_raw_handle()
+            self.inner.get_ref().as_raw_handle()
         }
     }
 
     impl AsRawHandle for ChildStdout {
         fn as_raw_handle(&self) -> RawHandle {
-            self.inner.as_raw_handle()
+            self.inner.get_ref().as_raw_handle()
         }
     }
 
     impl AsRawHandle for ChildStderr {
         fn as_raw_handle(&self) -> RawHandle {
-            self.inner.as_raw_handle()
+            self.inner.get_ref().as_raw_handle()
         }
     }
 }

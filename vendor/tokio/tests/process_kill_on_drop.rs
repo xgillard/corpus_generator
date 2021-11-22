@@ -1,17 +1,16 @@
 #![cfg(all(unix, feature = "process"))]
 #![warn(rust_2018_idioms)]
 
-use std::io::ErrorKind;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::time::sleep;
+use tokio::time::delay_for;
 use tokio_test::assert_ok;
 
 #[tokio::test]
 async fn kill_on_drop() {
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new("sh");
     cmd.args(&[
         "-c",
         "
@@ -25,14 +24,13 @@ async fn kill_on_drop() {
     ",
     ]);
 
-    let e = cmd.kill_on_drop(true).stdout(Stdio::piped()).spawn();
-    if e.is_err() && e.as_ref().unwrap_err().kind() == ErrorKind::NotFound {
-        println!("bash not available; skipping test");
-        return;
-    }
-    let mut child = e.unwrap();
+    let mut child = cmd
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
 
-    sleep(Duration::from_secs(2)).await;
+    delay_for(Duration::from_secs(2)).await;
 
     let mut out = child.stdout.take().unwrap();
     drop(child);

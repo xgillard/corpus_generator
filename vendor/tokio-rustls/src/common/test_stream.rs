@@ -1,4 +1,5 @@
 use super::Stream;
+use futures_core::ready;
 use futures_util::future::poll_fn;
 use futures_util::task::noop_waker_ref;
 use rustls::internal::pemfile::{certs, rsa_private_keys};
@@ -7,7 +8,7 @@ use std::io::{self, BufReader, Cursor, Read, Write};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use webpki::DNSNameRef;
 
 struct Good<'a>(&'a mut dyn Session);
@@ -16,17 +17,9 @@ impl<'a> AsyncRead for Good<'a> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let mut buf2 = buf.initialize_unfilled();
-
-        Poll::Ready(match self.0.write_tls(buf2.by_ref()) {
-            Ok(n) => {
-                buf.advance(n);
-                Ok(())
-            }
-            Err(err) => Err(err),
-        })
+        mut buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(self.0.write_tls(buf.by_ref()))
     }
 }
 
@@ -62,8 +55,8 @@ impl AsyncRead for Pending {
     fn poll_read(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        _: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+        _: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         Poll::Pending
     }
 }
@@ -92,9 +85,9 @@ impl AsyncRead for Eof {
     fn poll_read(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        _: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+        _: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(0))
     }
 }
 

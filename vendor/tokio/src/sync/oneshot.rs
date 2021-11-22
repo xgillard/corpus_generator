@@ -1,56 +1,6 @@
 #![cfg_attr(not(feature = "sync"), allow(dead_code, unreachable_pub))]
 
-//! A one-shot channel is used for sending a single message between
-//! asynchronous tasks. The [`channel`] function is used to create a
-//! [`Sender`] and [`Receiver`] handle pair that form the channel.
-//!
-//! The `Sender` handle is used by the producer to send the value.
-//! The `Receiver` handle is used by the consumer to receive the value.
-//!
-//! Each handle can be used on separate tasks.
-//!
-//! # Examples
-//!
-//! ```
-//! use tokio::sync::oneshot;
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let (tx, rx) = oneshot::channel();
-//!
-//!     tokio::spawn(async move {
-//!         if let Err(_) = tx.send(3) {
-//!             println!("the receiver dropped");
-//!         }
-//!     });
-//!
-//!     match rx.await {
-//!         Ok(v) => println!("got = {:?}", v),
-//!         Err(_) => println!("the sender dropped"),
-//!     }
-//! }
-//! ```
-//!
-//! If the sender is dropped without sending, the receiver will fail with
-//! [`error::RecvError`]:
-//!
-//! ```
-//! use tokio::sync::oneshot;
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let (tx, rx) = oneshot::channel::<u32>();
-//!
-//!     tokio::spawn(async move {
-//!         drop(tx);
-//!     });
-//!
-//!     match rx.await {
-//!         Ok(_) => panic!("This doesn't happen"),
-//!         Err(_) => println!("the sender dropped"),
-//!     }
-//! }
-//! ```
+//! A channel for sending a single message between asynchronous tasks.
 
 use crate::loom::cell::UnsafeCell;
 use crate::loom::sync::atomic::AtomicUsize;
@@ -64,62 +14,17 @@ use std::sync::atomic::Ordering::{self, AcqRel, Acquire};
 use std::task::Poll::{Pending, Ready};
 use std::task::{Context, Poll, Waker};
 
-/// Sends a value to the associated [`Receiver`].
+/// Sends a value to the associated `Receiver`.
 ///
-/// A pair of both a [`Sender`] and a [`Receiver`]  are created by the
-/// [`channel`](fn@channel) function.
+/// Instances are created by the [`channel`](fn@channel) function.
 #[derive(Debug)]
 pub struct Sender<T> {
     inner: Option<Arc<Inner<T>>>,
 }
 
-/// Receive a value from the associated [`Sender`].
+/// Receive a value from the associated `Sender`.
 ///
-/// A pair of both a [`Sender`] and a [`Receiver`]  are created by the
-/// [`channel`](fn@channel) function.
-///
-/// # Examples
-///
-/// ```
-/// use tokio::sync::oneshot;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let (tx, rx) = oneshot::channel();
-///
-///     tokio::spawn(async move {
-///         if let Err(_) = tx.send(3) {
-///             println!("the receiver dropped");
-///         }
-///     });
-///
-///     match rx.await {
-///         Ok(v) => println!("got = {:?}", v),
-///         Err(_) => println!("the sender dropped"),
-///     }
-/// }
-/// ```
-///
-/// If the sender is dropped without sending, the receiver will fail with
-/// [`error::RecvError`]:
-///
-/// ```
-/// use tokio::sync::oneshot;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let (tx, rx) = oneshot::channel::<u32>();
-///
-///     tokio::spawn(async move {
-///         drop(tx);
-///     });
-///
-///     match rx.await {
-///         Ok(_) => panic!("This doesn't happen"),
-///         Err(_) => println!("the sender dropped"),
-///     }
-/// }
-/// ```
+/// Instances are created by the [`channel`](fn@channel) function.
 #[derive(Debug)]
 pub struct Receiver<T> {
     inner: Option<Arc<Inner<T>>>,
@@ -179,42 +84,10 @@ struct Inner<T> {
     value: UnsafeCell<Option<T>>,
 
     /// The task to notify when the receiver drops without consuming the value.
-    tx_task: Task,
+    tx_task: UnsafeCell<MaybeUninit<Waker>>,
 
     /// The task to notify when the value is sent.
-    rx_task: Task,
-}
-
-struct Task(UnsafeCell<MaybeUninit<Waker>>);
-
-impl Task {
-    unsafe fn will_wake(&self, cx: &mut Context<'_>) -> bool {
-        self.with_task(|w| w.will_wake(cx.waker()))
-    }
-
-    unsafe fn with_task<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&Waker) -> R,
-    {
-        self.0.with(|ptr| {
-            let waker: *const Waker = (&*ptr).as_ptr();
-            f(&*waker)
-        })
-    }
-
-    unsafe fn drop_task(&self) {
-        self.0.with_mut(|ptr| {
-            let ptr: *mut Waker = (&mut *ptr).as_mut_ptr();
-            ptr.drop_in_place();
-        });
-    }
-
-    unsafe fn set_task(&self, cx: &mut Context<'_>) {
-        self.0.with_mut(|ptr| {
-            let ptr: *mut Waker = (&mut *ptr).as_mut_ptr();
-            ptr.write(cx.waker().clone());
-        });
-    }
+    rx_task: UnsafeCell<MaybeUninit<Waker>>,
 }
 
 #[derive(Clone, Copy)]
@@ -251,11 +124,12 @@ struct State(usize);
 /// }
 /// ```
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+    #[allow(deprecated)]
     let inner = Arc::new(Inner {
         state: AtomicUsize::new(State::new().as_usize()),
         value: UnsafeCell::new(None),
-        tx_task: Task(UnsafeCell::new(MaybeUninit::uninit())),
-        rx_task: Task(UnsafeCell::new(MaybeUninit::uninit())),
+        tx_task: UnsafeCell::new(MaybeUninit::uninit()),
+        rx_task: UnsafeCell::new(MaybeUninit::uninit()),
     });
 
     let tx = Sender {
@@ -315,12 +189,61 @@ impl<T> Sender<T> {
         });
 
         if !inner.complete() {
-            unsafe {
-                return Err(inner.consume_value().unwrap());
-            }
+            return Err(inner
+                .value
+                .with_mut(|ptr| unsafe { (*ptr).take() }.unwrap()));
         }
 
         Ok(())
+    }
+
+    #[doc(hidden)] // TODO: remove
+    pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // Keep track of task budget
+        let coop = ready!(crate::coop::poll_proceed(cx));
+
+        let inner = self.inner.as_ref().unwrap();
+
+        let mut state = State::load(&inner.state, Acquire);
+
+        if state.is_closed() {
+            coop.made_progress();
+            return Poll::Ready(());
+        }
+
+        if state.is_tx_task_set() {
+            let will_notify = unsafe { inner.with_tx_task(|w| w.will_wake(cx.waker())) };
+
+            if !will_notify {
+                state = State::unset_tx_task(&inner.state);
+
+                if state.is_closed() {
+                    // Set the flag again so that the waker is released in drop
+                    State::set_tx_task(&inner.state);
+                    coop.made_progress();
+                    return Ready(());
+                } else {
+                    unsafe { inner.drop_tx_task() };
+                }
+            }
+        }
+
+        if !state.is_tx_task_set() {
+            // Attempt to set the task
+            unsafe {
+                inner.set_tx_task(cx);
+            }
+
+            // Update the state
+            state = State::set_tx_task(&inner.state);
+
+            if state.is_closed() {
+                coop.made_progress();
+                return Ready(());
+            }
+        }
+
+        Pending
     }
 
     /// Waits for the associated [`Receiver`] handle to close.
@@ -364,6 +287,8 @@ impl<T> Sender<T> {
     /// use tokio::sync::oneshot;
     /// use tokio::time::{self, Duration};
     ///
+    /// use futures::{select, FutureExt};
+    ///
     /// async fn compute() -> String {
     ///     // Complex computation returning a `String`
     /// # "hello".to_string()
@@ -374,14 +299,12 @@ impl<T> Sender<T> {
     ///     let (mut tx, rx) = oneshot::channel();
     ///
     ///     tokio::spawn(async move {
-    ///         tokio::select! {
-    ///             _ = tx.closed() => {
+    ///         select! {
+    ///             _ = tx.closed().fuse() => {
     ///                 // The receiver dropped, no need to do any further work
     ///             }
-    ///             value = compute() => {
-    ///                 // The send can fail if the channel was closed at the exact same
-    ///                 // time as when compute() finished, so just ignore the failure.
-    ///                 let _ = tx.send(value);
+    ///             value = compute().fuse() => {
+    ///                 tx.send(value).unwrap()
     ///             }
     ///         }
     ///     });
@@ -429,94 +352,6 @@ impl<T> Sender<T> {
         let state = State::load(&inner.state, Acquire);
         state.is_closed()
     }
-
-    /// Check whether the oneshot channel has been closed, and if not, schedules the
-    /// `Waker` in the provided `Context` to receive a notification when the channel is
-    /// closed.
-    ///
-    /// A [`Receiver`] is closed by either calling [`close`] explicitly, or when the
-    /// [`Receiver`] value is dropped.
-    ///
-    /// Note that on multiple calls to poll, only the `Waker` from the `Context` passed
-    /// to the most recent call will be scheduled to receive a wakeup.
-    ///
-    /// [`Receiver`]: struct@crate::sync::oneshot::Receiver
-    /// [`close`]: fn@crate::sync::oneshot::Receiver::close
-    ///
-    /// # Return value
-    ///
-    /// This function returns:
-    ///
-    ///  * `Poll::Pending` if the channel is still open.
-    ///  * `Poll::Ready(())` if the channel is closed.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tokio::sync::oneshot;
-    ///
-    /// use futures::future::poll_fn;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let (mut tx, mut rx) = oneshot::channel::<()>();
-    ///
-    ///     tokio::spawn(async move {
-    ///         rx.close();
-    ///     });
-    ///
-    ///     poll_fn(|cx| tx.poll_closed(cx)).await;
-    ///
-    ///     println!("the receiver dropped");
-    /// }
-    /// ```
-    pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        // Keep track of task budget
-        let coop = ready!(crate::coop::poll_proceed(cx));
-
-        let inner = self.inner.as_ref().unwrap();
-
-        let mut state = State::load(&inner.state, Acquire);
-
-        if state.is_closed() {
-            coop.made_progress();
-            return Poll::Ready(());
-        }
-
-        if state.is_tx_task_set() {
-            let will_notify = unsafe { inner.tx_task.will_wake(cx) };
-
-            if !will_notify {
-                state = State::unset_tx_task(&inner.state);
-
-                if state.is_closed() {
-                    // Set the flag again so that the waker is released in drop
-                    State::set_tx_task(&inner.state);
-                    coop.made_progress();
-                    return Ready(());
-                } else {
-                    unsafe { inner.tx_task.drop_task() };
-                }
-            }
-        }
-
-        if !state.is_tx_task_set() {
-            // Attempt to set the task
-            unsafe {
-                inner.tx_task.set_task(cx);
-            }
-
-            // Update the state
-            state = State::set_tx_task(&inner.state);
-
-            if state.is_closed() {
-                coop.made_progress();
-                return Ready(());
-            }
-        }
-
-        Pending
-    }
 }
 
 impl<T> Drop for Sender<T> {
@@ -537,9 +372,6 @@ impl<T> Receiver<T> {
     ///
     /// This function is useful to perform a graceful shutdown and ensure that a
     /// value will not be sent into the channel and never received.
-    ///
-    /// `close` is no-op if a message is already received or the channel
-    /// is already closed.
     ///
     /// [`Sender`]: Sender
     /// [`try_recv`]: Receiver::try_recv
@@ -588,9 +420,8 @@ impl<T> Receiver<T> {
     /// }
     /// ```
     pub fn close(&mut self) {
-        if let Some(inner) = self.inner.as_ref() {
-            inner.close();
-        }
+        let inner = self.inner.as_ref().unwrap();
+        inner.close();
     }
 
     /// Attempts to receive a value.
@@ -672,7 +503,7 @@ impl<T> Receiver<T> {
                 return Err(TryRecvError::Empty);
             }
         } else {
-            Err(TryRecvError::Closed)
+            panic!("called after complete");
         };
 
         self.inner = None;
@@ -715,7 +546,7 @@ impl<T> Inner<T> {
         if prev.is_rx_task_set() {
             // TODO: Consume waker?
             unsafe {
-                self.rx_task.with_task(Waker::wake_by_ref);
+                self.with_rx_task(Waker::wake_by_ref);
             }
         }
 
@@ -740,7 +571,7 @@ impl<T> Inner<T> {
             Ready(Err(RecvError(())))
         } else {
             if state.is_rx_task_set() {
-                let will_notify = unsafe { self.rx_task.will_wake(cx) };
+                let will_notify = unsafe { self.with_rx_task(|w| w.will_wake(cx.waker())) };
 
                 // Check if the task is still the same
                 if !will_notify {
@@ -756,7 +587,7 @@ impl<T> Inner<T> {
                             None => Ready(Err(RecvError(()))),
                         };
                     } else {
-                        unsafe { self.rx_task.drop_task() };
+                        unsafe { self.drop_rx_task() };
                     }
                 }
             }
@@ -764,7 +595,7 @@ impl<T> Inner<T> {
             if !state.is_rx_task_set() {
                 // Attempt to set the task
                 unsafe {
-                    self.rx_task.set_task(cx);
+                    self.set_rx_task(cx);
                 }
 
                 // Update the state
@@ -791,7 +622,7 @@ impl<T> Inner<T> {
 
         if prev.is_tx_task_set() && !prev.is_complete() {
             unsafe {
-                self.tx_task.with_task(Waker::wake_by_ref);
+                self.with_tx_task(Waker::wake_by_ref);
             }
         }
     }
@@ -800,28 +631,72 @@ impl<T> Inner<T> {
     unsafe fn consume_value(&self) -> Option<T> {
         self.value.with_mut(|ptr| (*ptr).take())
     }
+
+    unsafe fn with_rx_task<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Waker) -> R,
+    {
+        self.rx_task.with(|ptr| {
+            let waker: *const Waker = (&*ptr).as_ptr();
+            f(&*waker)
+        })
+    }
+
+    unsafe fn with_tx_task<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Waker) -> R,
+    {
+        self.tx_task.with(|ptr| {
+            let waker: *const Waker = (&*ptr).as_ptr();
+            f(&*waker)
+        })
+    }
+
+    unsafe fn drop_rx_task(&self) {
+        self.rx_task.with_mut(|ptr| {
+            let ptr: *mut Waker = (&mut *ptr).as_mut_ptr();
+            ptr.drop_in_place();
+        });
+    }
+
+    unsafe fn drop_tx_task(&self) {
+        self.tx_task.with_mut(|ptr| {
+            let ptr: *mut Waker = (&mut *ptr).as_mut_ptr();
+            ptr.drop_in_place();
+        });
+    }
+
+    unsafe fn set_rx_task(&self, cx: &mut Context<'_>) {
+        self.rx_task.with_mut(|ptr| {
+            let ptr: *mut Waker = (&mut *ptr).as_mut_ptr();
+            ptr.write(cx.waker().clone());
+        });
+    }
+
+    unsafe fn set_tx_task(&self, cx: &mut Context<'_>) {
+        self.tx_task.with_mut(|ptr| {
+            let ptr: *mut Waker = (&mut *ptr).as_mut_ptr();
+            ptr.write(cx.waker().clone());
+        });
+    }
 }
 
 unsafe impl<T: Send> Send for Inner<T> {}
 unsafe impl<T: Send> Sync for Inner<T> {}
 
-fn mut_load(this: &mut AtomicUsize) -> usize {
-    this.with_mut(|v| *v)
-}
-
 impl<T> Drop for Inner<T> {
     fn drop(&mut self) {
-        let state = State(mut_load(&mut self.state));
+        let state = State(self.state.with_mut(|v| *v));
 
         if state.is_rx_task_set() {
             unsafe {
-                self.rx_task.drop_task();
+                self.drop_rx_task();
             }
         }
 
         if state.is_tx_task_set() {
             unsafe {
-                self.tx_task.drop_task();
+                self.drop_tx_task();
             }
         }
     }

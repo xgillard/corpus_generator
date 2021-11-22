@@ -1,6 +1,6 @@
-use crate::cipher::{MessageDecrypter, MessageEncrypter};
+use crate::cipher::{MessageEncrypter, MessageDecrypter};
 use crate::error::TLSError;
-use crate::msgs::message::{BorrowMessage, Message};
+use crate::msgs::message::{Message, BorrowMessage};
 
 static SEQ_SOFT_LIMIT: u64 = 0xffff_ffff_ffff_0000u64;
 static SEQ_HARD_LIMIT: u64 = 0xffff_ffff_ffff_fffeu64;
@@ -55,7 +55,7 @@ impl RecordLayer {
     }
 
     /// Prepare to use the given `MessageDecrypter` for future message decryption.
-    /// It is not used until you call `start_decrypting`.
+    /// It is not use duntil you call `start_decrypting`.
     pub fn prepare_message_decrypter(&mut self, cipher: Box<dyn MessageDecrypter>) {
         self.message_decrypter = cipher;
         self.read_seq = 0;
@@ -123,8 +123,7 @@ impl RecordLayer {
         debug_assert!(self.decrypt_state == DirectionState::Active);
         let seq = self.read_seq;
         self.read_seq += 1;
-        self.message_decrypter
-            .decrypt(encr, seq)
+        self.message_decrypter.decrypt(encr, seq)
     }
 
     /// Encrypt a TLS message.
@@ -136,8 +135,6 @@ impl RecordLayer {
         assert!(!self.encrypt_exhausted());
         let seq = self.write_seq;
         self.write_seq += 1;
-        self.message_encrypter
-            .encrypt(plain, seq)
-            .unwrap()
+        self.message_encrypter.encrypt(plain, seq).unwrap()
     }
 }

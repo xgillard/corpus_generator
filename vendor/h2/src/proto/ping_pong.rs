@@ -211,16 +211,11 @@ impl ReceivedPing {
 
 impl UserPings {
     pub(crate) fn send_ping(&self) -> Result<(), Option<proto::Error>> {
-        let prev = self
-            .0
-            .state
-            .compare_exchange(
-                USER_STATE_EMPTY,        // current
-                USER_STATE_PENDING_PING, // new
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap_or_else(|v| v);
+        let prev = self.0.state.compare_and_swap(
+            USER_STATE_EMPTY,        // current
+            USER_STATE_PENDING_PING, // new
+            Ordering::AcqRel,
+        );
 
         match prev {
             USER_STATE_EMPTY => {
@@ -239,16 +234,11 @@ impl UserPings {
         // Must register before checking state, in case state were to change
         // before we could register, and then the ping would just be lost.
         self.0.pong_task.register(cx.waker());
-        let prev = self
-            .0
-            .state
-            .compare_exchange(
-                USER_STATE_RECEIVED_PONG, // current
-                USER_STATE_EMPTY,         // new
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap_or_else(|v| v);
+        let prev = self.0.state.compare_and_swap(
+            USER_STATE_RECEIVED_PONG, // current
+            USER_STATE_EMPTY,         // new
+            Ordering::AcqRel,
+        );
 
         match prev {
             USER_STATE_RECEIVED_PONG => Poll::Ready(Ok(())),
@@ -262,16 +252,11 @@ impl UserPings {
 
 impl UserPingsRx {
     fn receive_pong(&self) -> bool {
-        let prev = self
-            .0
-            .state
-            .compare_exchange(
-                USER_STATE_PENDING_PONG,  // current
-                USER_STATE_RECEIVED_PONG, // new
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .unwrap_or_else(|v| v);
+        let prev = self.0.state.compare_and_swap(
+            USER_STATE_PENDING_PONG,  // current
+            USER_STATE_RECEIVED_PONG, // new
+            Ordering::AcqRel,
+        );
 
         if prev == USER_STATE_PENDING_PONG {
             self.0.pong_task.wake();

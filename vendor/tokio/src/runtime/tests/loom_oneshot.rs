@@ -1,5 +1,6 @@
-use crate::loom::sync::{Arc, Mutex};
 use loom::sync::Notify;
+
+use std::sync::{Arc, Mutex};
 
 pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let inner = Arc::new(Inner {
@@ -30,7 +31,7 @@ struct Inner<T> {
 
 impl<T> Sender<T> {
     pub(crate) fn send(self, value: T) {
-        *self.inner.value.lock() = Some(value);
+        *self.inner.value.lock().unwrap() = Some(value);
         self.inner.notify.notify();
     }
 }
@@ -38,7 +39,7 @@ impl<T> Sender<T> {
 impl<T> Receiver<T> {
     pub(crate) fn recv(self) -> T {
         loop {
-            if let Some(v) = self.inner.value.lock().take() {
+            if let Some(v) = self.inner.value.lock().unwrap().take() {
                 return v;
             }
 

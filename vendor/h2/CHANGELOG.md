@@ -1,33 +1,3 @@
-# 0.3.4 (August 20, 2021)
-
-* Fix panic when encoding header size update over a certain size.
-* Fix `SendRequest` to wake up connection when dropped.
-* Fix potential hang if `RecvStream` is placed in the request or response `extensions`.
-* Stop calling `Instant::now` if zero reset streams are configured.
-
-# 0.3.3 (April 29, 2021)
-
-* Fix client being able to make `CONNECT` requests without a `:path`.
-* Expose `RecvStream::poll_data`.
-* Fix some docs.
-
-# 0.3.2 (March 24, 2021)
-
-* Fix incorrect handling of received 1xx responses on the client when the request body is still streaming.
-
-# 0.3.1 (February 26, 2021)
-
-* Add `Connection::max_concurrent_recv_streams()` getter.
-* Add `Connection::max_concurrent_send_streams()` getter.
-* Fix client to ignore receipt of 1xx headers frames.
-* Fix incorrect calculation of pseudo header lengths when determining if a received header is too big.
-* Reduce monomorphized code size of internal code.
-
-# 0.3.0 (December 23, 2020)
-
-* Update to Tokio v1 and Bytes v1.
-* Disable `tracing`'s `log` feature. (It can still be enabled by a user in their own `Cargo.toml`.)
-
 # 0.2.7 (October 22, 2020)
 
 * Fix stream ref count when sending a push promise

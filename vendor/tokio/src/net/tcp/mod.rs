@@ -1,8 +1,10 @@
 //! TCP utility types
 
 pub(crate) mod listener;
+pub(crate) use listener::TcpListener;
 
-pub(crate) mod socket;
+mod incoming;
+pub use incoming::Incoming;
 
 mod split;
 pub use split::{ReadHalf, WriteHalf};

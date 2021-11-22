@@ -6,7 +6,6 @@ mod atomic_u32;
 mod atomic_u64;
 mod atomic_u8;
 mod atomic_usize;
-mod mutex;
 #[cfg(feature = "parking_lot")]
 mod parking_lot;
 mod unsafe_cell;
@@ -15,12 +14,7 @@ pub(crate) mod cell {
     pub(crate) use super::unsafe_cell::UnsafeCell;
 }
 
-#[cfg(any(
-    feature = "net",
-    feature = "process",
-    feature = "signal",
-    feature = "sync",
-))]
+#[cfg(any(feature = "sync", feature = "io-driver"))]
 pub(crate) mod future {
     pub(crate) use crate::sync::AtomicWaker;
 }
@@ -47,7 +41,7 @@ pub(crate) mod rand {
 }
 
 pub(crate) mod sync {
-    pub(crate) use std::sync::{Arc, Weak};
+    pub(crate) use std::sync::Arc;
 
     // Below, make sure all the feature-influenced types are exported for
     // internal use. Note however that some are not _currently_ named by
@@ -61,10 +55,9 @@ pub(crate) mod sync {
 
     #[cfg(not(feature = "parking_lot"))]
     #[allow(unused_imports)]
-    pub(crate) use std::sync::{Condvar, MutexGuard, RwLock, RwLockReadGuard, WaitTimeoutResult};
-
-    #[cfg(not(feature = "parking_lot"))]
-    pub(crate) use crate::loom::std::mutex::Mutex;
+    pub(crate) use std::sync::{
+        Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, WaitTimeoutResult,
+    };
 
     pub(crate) mod atomic {
         pub(crate) use crate::loom::std::atomic_ptr::AtomicPtr;
@@ -74,36 +67,20 @@ pub(crate) mod sync {
         pub(crate) use crate::loom::std::atomic_u8::AtomicU8;
         pub(crate) use crate::loom::std::atomic_usize::AtomicUsize;
 
-        pub(crate) use std::sync::atomic::{fence, AtomicBool, Ordering};
-        // TODO: once we bump MSRV to 1.49+, use `hint::spin_loop` instead.
-        #[allow(deprecated)]
-        pub(crate) use std::sync::atomic::spin_loop_hint;
+        pub(crate) use std::sync::atomic::{spin_loop_hint, AtomicBool};
     }
 }
 
 pub(crate) mod sys {
-    #[cfg(feature = "rt-multi-thread")]
+    #[cfg(feature = "rt-threaded")]
     pub(crate) fn num_cpus() -> usize {
         usize::max(1, num_cpus::get())
     }
 
-    #[cfg(not(feature = "rt-multi-thread"))]
+    #[cfg(not(feature = "rt-threaded"))]
     pub(crate) fn num_cpus() -> usize {
         1
     }
 }
 
-pub(crate) mod thread {
-    #[inline]
-    pub(crate) fn yield_now() {
-        // TODO: once we bump MSRV to 1.49+, use `hint::spin_loop` instead.
-        #[allow(deprecated)]
-        std::sync::atomic::spin_loop_hint();
-    }
-
-    #[allow(unused_imports)]
-    pub(crate) use std::thread::{
-        current, panicking, park, park_timeout, sleep, spawn, Builder, JoinHandle, LocalKey,
-        Result, Thread, ThreadId,
-    };
-}
+pub(crate) use std::thread;
