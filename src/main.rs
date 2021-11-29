@@ -71,11 +71,11 @@ struct Args {
     #[structopt(long, short, default_value="[::]:8080")]
     endpoint: String,
     /// Where is the certificate located ?
-    #[structopt(long, short, default_value="./cert/cert.pem")]
-    cert: String,
+    #[structopt(long, short)]
+    cert: Option<String>,
     /// Where is the server's private key corresponding to the certificate located
-    #[structopt(long, short, default_value="./cert/key.pem")]
-    key: String
+    #[structopt(long, short)]
+    key: Option<String>
 }
 
 /// This is the global variable which is used to determine the directory
@@ -201,7 +201,7 @@ async fn random_word_from_static_corpus(
 
 /// This endpoint serves a static file
 #[get("/static/{corpus_id}")]
-async fn static_file(corpus_id: String) -> Result<NamedFile> {
+async fn static_file(Path(corpus_id): Path<String>) -> Result<NamedFile> {
     let fname = fname_from_id(&corpus_id);
     let nfile = NamedFile::open(fname)?;
     Ok(nfile)
@@ -226,6 +226,23 @@ fn get_private_key(keys: &str)-> Result<PrivateKey> {
     }
 }
     
+fn get_tls_configuration(args: &Args) -> Result<Option<ServerConfig>> {
+    if let Some(cert_id) = &args.cert {
+        if let Some(key_id) = &args.key {
+            // Https configuration with rustls
+            let cert_chain   = get_certificates(&cert_id)?;
+            let private_key  = get_private_key(&key_id)?;
+            //
+            let mut config = ServerConfig::new(NoClientAuth::new());
+            config.set_single_cert(cert_chain, private_key)?;
+            Ok(Some(config))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
 
 /// This is the program's main entry point. It spawns the server whenever it
 /// gets run
@@ -240,14 +257,7 @@ async fn main() -> Result<()> {
         CORPUS_DIR = Box::leak(cdir);
     }
 
-    // Https configuration with rustls
-    let cert_chain   = get_certificates(&args.cert)?;
-    let private_key  = get_private_key(&args.key)?;
-    //
-    let mut config = ServerConfig::new(NoClientAuth::new());
-    config.set_single_cert(cert_chain, private_key)?;
-
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         let cors = Cors::permissive();
         App::new()
             .wrap(cors)
@@ -255,12 +265,20 @@ async fn main() -> Result<()> {
             .service(static_file)
             .service(gen_corpus_bz2)
             .service(gen_corpus_txt)
-            .service(random_word_from_static_corpus)
 
-    })
-    .bind_rustls(&args.endpoint, config)?
-    .run()
-    .await?;
+    });
+
+    let tls_config = get_tls_configuration(&args)?;
+
+    if let Some(tls_config) = tls_config { 
+        server.bind_rustls(&args.endpoint, tls_config)?
+            .run()
+            .await?;
+    } else {
+        server.bind(&args.endpoint)?
+            .run()
+            .await?;
+    }
 
     Ok(())
 }
