@@ -263,9 +263,9 @@ async fn main() -> Result<()> {
             .wrap(cors)
             .wrap(actix_web::middleware::Logger::default())
             .service(static_file)
+            .service(random_word_from_static_corpus)
             .service(gen_corpus_bz2)
             .service(gen_corpus_txt)
-
     });
 
     let tls_config = get_tls_configuration(&args)?;
